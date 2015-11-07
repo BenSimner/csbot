@@ -30,6 +30,10 @@ lexer_test_cases_names = [
     ('0a', [TT.NAME], ['0a']),
 ]
 
+lexer_test_cases_whitespace_ignore = [
+    ('x x', [TT.NAME, TT.NAME], ['x', 'x']),
+]
+
 class TestLexer(BotTestCase):
     CONFIG = """\
     [@bot]
@@ -67,6 +71,12 @@ class TestLexer(BotTestCase):
 
     def test_lexer_names(self):
         for s, x, y in lexer_test_cases_names:
+            with self.subTest(s=s):
+                result = self.lisp._lex(s)
+                self._match(result, x, y)
+
+    def test_lexer_whitespace(self):
+        for s, x, y in lexer_test_cases_whitespace_ignore:
             with self.subTest(s=s):
                 result = self.lisp._lex(s)
                 self._match(result, x, y)
