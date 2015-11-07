@@ -77,7 +77,7 @@ class LexCharDict(defaultdict):
         this behaves as a tree, allowing lookup of tokentypes of lexeme's incrementally in a loop
     
     This class utilizes ``defaultdict`` as a FSA to accept regular languages and determine
-    the :class:``TokenType`` of the given input string.
+    the :class:`TokenType` of the given input string.
     '''
 
     def __init__(self, tok=None):
@@ -162,7 +162,7 @@ class ProgramDict(defaultdict):
 
 def lex(program_dict, s):
     '''Perform lexical analysis on the given string *s* using a match dictionary *program_dict* 
-    (see :class:``ProgramDict``)
+    (see :class:`ProgramDict`)
 
     If *s* is accepted, then this will return a generator of *Token*s
     If *s* is not accepted, then this will raise `~ValueError`
