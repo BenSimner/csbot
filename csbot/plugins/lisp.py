@@ -93,10 +93,13 @@ class LexCharDict(defaultdict):
                 if d._tok in (None, '.'):
                     d._tok = TokenType.NUMBER
             except:
-                if k == 'i':
-                    d._tok = TokenType.IMAGINARY
-                elif k == '.':
-                    d._tok = '.'
+                if self._tok == TokenType.NUMBER:
+                    if k == 'i':
+                        d._tok = TokenType.IMAGINARY
+                    elif k == '.':
+                        d._tok = '.'
+                    else:
+                        d._tok = TokenType.NAME
                 else:
                     d._tok = TokenType.NAME
         elif self._tok == TokenType.IMAGINARY:
@@ -184,18 +187,25 @@ def eval(ast):
 
     raise ValueError
 
-class LispEval(Plugin):
+class Lisp(Plugin):
     '''Performs evaluations on given strings interpreted as a scheme/lisp input
     '''
-
-    def _eval(self, s):
+    def _build_program_dict(self):
         matches = build_lexchar_dict(**SYMBOL_LUT)
         symbols = SYMBOLS
 
         lexeme_dict = LexemeDict(matches)
         program_dict = ProgramDict(symbols, lexeme_dict)
-        tk_gen = lex(program_dict, s)
-        
+        return program_dict
+
+    def _lex(self, s):
+        program_dict = self._build_program_dict()
+        return lex(program_dict, s)
+
+    def _parse(self, tks):
+        raise NotImplementedError
+
+    def _eval(self, s):
         raise NotImplementedError
 
     @Plugin.command('eval')
@@ -204,4 +214,4 @@ class LispEval(Plugin):
         Sending the reply
         '''
 
-        raise NotImplementedError
+        raise NotImplementedErroo
