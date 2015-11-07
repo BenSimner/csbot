@@ -50,34 +50,24 @@ class TestLexer(BotTestCase):
 
         self.assertEqual(result, tokens)
 
+    def _test(self, test_cases):
+        for s, x, y in test_cases:
+            with self.subTest(s=s):
+                result = self.lisp._lex(s)
+                self._match(result, x, y)
+
 
     def test_lexer_symbols(self):
-        for s, x, y in lexer_test_cases_symbols:
-            with self.subTest(s=s):
-                result = self.lisp._lex(s)
-                self._match(result, x, y)
+        self._test(lexer_test_cases_symbols)
 
     def test_lexer_symbol_match(self):
-        for s, x, y in lexer_test_cases_match_symbols:
-            with self.subTest(s=s):
-                result = self.lisp._lex(s)
-                self._match(result, x, y)
+        self._test(lexer_test_cases_match_symbols)
 
     def test_lexer_numbers(self):
-        for s, x, y in lexer_test_cases_numbers:
-            with self.subTest(s=s):
-                result = self.lisp._lex(s)
-                self._match(result, x, y)
+        self._test(lexer_test_cases_numbers)
 
     def test_lexer_names(self):
-        for s, x, y in lexer_test_cases_names:
-            with self.subTest(s=s):
-                result = self.lisp._lex(s)
-                self._match(result, x, y)
+        self._test(lexer_test_cases_names)
 
     def test_lexer_whitespace(self):
-        for s, x, y in lexer_test_cases_whitespace_ignore:
-            with self.subTest(s=s):
-                result = self.lisp._lex(s)
-                self._match(result, x, y)
-
+        self._test(lexer_test_cases_whitespace_ignore)
