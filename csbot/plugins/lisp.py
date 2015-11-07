@@ -148,13 +148,14 @@ class ProgramDict(defaultdict):
             for letter in s:
                 if letter in whitespace or letter in symbols:
                     if word:
-                        tok_type = lex_dict[word]
-                        yield Token(tok_type, word)
+                        yield Token(lex_dict[word], word)
                     if letter in symbols:
                         yield Token(lex_dict[letter], letter)
                     word = ''
                 else:
                     word += letter
+            if word:
+                yield Token(lex_dict[word], word)
 
         self[s] = _gen()
         return self[s]
