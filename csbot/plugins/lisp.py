@@ -215,4 +215,4 @@ class Lisp(Plugin):
         Sending the reply
         '''
 
-        raise NotImplementedErroo
+        raise NotImplementedError
