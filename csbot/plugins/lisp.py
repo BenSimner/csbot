@@ -14,8 +14,10 @@ class TokenType(Enum):
     # they are a string of any non-reserved non-whitespace printable characters 
     NAME = 1
     
-    # Scheme Symbols are the symbol \' (apostrophe) followed by a Name
-    SYMBOL = 2
+    # An apostrophe can either appear as a part of the name, 
+    # but when it appears at the _start_ of an expr, it is evaluated as a symbol
+    # and is used to build up scheme symbols (quoted expressions)
+    APOSTROPHE = 2
 
     # Scheme strings are strings of printable characters enclosed in ``"``
     STRING = 3
@@ -79,15 +81,6 @@ class NumAST(AST):
 
         return [self._real, self._imaginary]
 
-class ListAST(AST):
-    '''Special AST representing quoted lists
-    '''
-    def __init__(self, *args):
-        self._children = args
-    @property
-    def children(self):
-        return self._children
-
 def make_ast(name, arg_names=[]):
     class _AST(AST):
         def __init__(self,*args):
@@ -107,7 +100,7 @@ def make_ast(name, arg_names=[]):
     return _AST
 
 NameAST = make_ast('Name', ['name'])
-SymbolAST = make_ast('Symbol', ['symbol'])
+SymbolAST = make_ast('Symbol', ['expr'])
 StringAST = make_ast('String', ['string'])
 FuncApplicationAST = make_ast('FuncApply', ['funcName', '*args'])
 
@@ -168,10 +161,8 @@ class LexCharDict(defaultdict):
         # handle symbols
         elif k == '\'':
             if self._tok is None:
-                d._char = ''
-                d._tok = 'unfinished_symbol'
-        elif self._tok == 'unfinished_symbol':
-            d._tok = TokenType.SYMBOL
+                d._char = '\''
+                d._tok = TokenType.APOSTROPHE
 
         # handle numbers
         elif self._tok in (None, '.', TokenType.REAL, TokenType.NUMBER):
@@ -260,7 +251,13 @@ class ProgramDict(defaultdict):
                         yield lex_dict[letter]
                     word = ''
                 else:
+                    # deal with symbols
+                    if not word and letter is '\'':
+                        yield lex_dict['\'']
+                        continue
                     word += letter
+
+            # catch final token
             if word:
                 yield lex_dict[word]
 
@@ -346,9 +343,11 @@ def _parse_atom():
     elif lookahead() == TokenType.STRING:
         s = lexeme()
         push(StringAST(s))
-    elif lookahead() == TokenType.SYMBOL:
-        s = lexeme()
-        push(SymbolAST(s))
+    elif lookahead() == TokenType.APOSTROPHE:
+        accept(TokenType.APOSTROPHE)
+        _parse_expr()
+        push(SymbolAST(pop()))
+        return
     else:
         # anything left *must* be a name
         # else it's a parse error
@@ -365,6 +364,14 @@ def _parse_name():
 def _parse_func_call(close_block):
     '''Parses a function call from the first expr in the parens
     '''
+    if lookahead() == close_block:
+        # no body
+        # whilst this is semantically meaningless
+        # it can be valid when quoted
+        push(FuncApplicationAST([]))
+        accept(close_block)
+        return
+
     _parse_expr()
     func = pop()
 

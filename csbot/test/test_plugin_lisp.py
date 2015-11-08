@@ -35,7 +35,7 @@ lexer_test_cases_strings = [
 ]
 
 lexer_test_cases_symbols = [
-    ("'a", [TT.SYMBOL], ['a']),
+    ("'a", [TT.APOSTROPHE, TT.NAME], ['\'', 'a']),
 ]
 
 lexer_test_cases_names = [
@@ -100,7 +100,10 @@ parser_test_cases_atoms = [
     ('5.1i', NumAST, [0, 5.1]), 
 
     # symbols
-    ("'a", SymbolAST, ['a']),
+    ("'a", SymbolAST, [NameAST('a')]),
+    ("' a", SymbolAST, [NameAST('a')]),
+    ("' (x  y)", SymbolAST, [FuncApplicationAST(NameAST('x'), NameAST('y'))]),
+    ("' (     )", SymbolAST, [FuncApplicationAST([])]),   # special syntax for empty list
 
     # strings
     ('"abc"', StringAST, ['abc']),
