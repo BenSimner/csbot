@@ -115,9 +115,11 @@ parser_test_cases_atoms = [
 
 parser_test_cases_exprs = [
     ('(f)', FuncApplicationAST, [NameAST('f')]),
+    ('(+ 1 2)', FuncApplicationAST, [NameAST('+'), NumAST(1), NumAST(2)]),
     ('(f x)', FuncApplicationAST, [NameAST('f'), NameAST('x')]),
     ('(f x)', FuncApplicationAST, [NameAST('f'), NameAST('x')]),
     ('(f (x y) x)', FuncApplicationAST, [NameAST('f'), FuncApplicationAST(NameAST('x'), NameAST('y')), NameAST('x')]),
+    ('(list \'(+ 1 2))', FuncApplicationAST, [NameAST('list'), SymbolAST(FuncApplicationAST(NameAST('+'), NumAST(1), NumAST(2)))]),
 ]
 
 class TestParser(BotTestCase):
@@ -145,3 +147,37 @@ class TestParser(BotTestCase):
 
     def test_parser_exprs(self):
         self._test(parser_test_cases_exprs)
+
+
+eval_test_cases_exprs = [
+    ('(+ 1 2)', 3),
+]
+
+eval_test_cases_lists = [
+    ("'()", ()),
+    ('(list 1 2)', (1,(2,()))),
+    ('(cons 1 2)', (1,2)),
+    ("(cons 1 '())", (1,())),
+]
+
+class TestEval(BotTestCase):
+    CONFIG = """\
+    [@bot]
+    plugins = lisp
+    """
+
+    PLUGINS = ['lisp']
+
+    def _test(self, cases):
+        for case in cases:
+            s, expected = case
+            with self.subTest(s=s):
+                value = self.lisp._eval(s)
+                self.assertEqual(value.value, expected)
+
+    def test_eval_exprs(self):
+        self._test(eval_test_cases_exprs)
+
+    def test_eval_lists(self):
+        self._test(eval_test_cases_lists)
+

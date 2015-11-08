@@ -1,6 +1,13 @@
+# lisp.py - Lisp plugin for csbot/
+# author: Ben Simner 
+'''
+The most over-engineered implementation of a lisp-like language i could over-engineer.
+'''
+
 from string import whitespace
 from enum import Enum
 from collections import namedtuple, defaultdict
+from functools import partial
 from abc import ABC, abstractmethod, abstractproperty
 
 from csbot.plugin import Plugin
@@ -10,7 +17,7 @@ Token = namedtuple('Token', ['token_type', 'lexeme'])
 class TokenType(Enum):
     UNKNOWN = 0
     
-    # Scheme Names are standard variable names 
+    # Lisp Names are standard variable names 
     # they are a string of any non-reserved non-whitespace printable characters 
     NAME = 1
     
@@ -19,7 +26,7 @@ class TokenType(Enum):
     # and is used to build up scheme symbols (quoted expressions)
     APOSTROPHE = 2
 
-    # Scheme strings are strings of printable characters enclosed in ``"``
+    # Lisp strings are strings of printable characters enclosed in ``"``
     STRING = 3
 
     # L_PAREN, R_PAREN are opening and closing parenthesises, respectfully
@@ -100,7 +107,8 @@ def make_ast(name, arg_names=[]):
     return _AST
 
 NameAST = make_ast('Name', ['name'])
-SymbolAST = make_ast('Symbol', ['expr'])
+NameAST.__repr__ = lambda self: str(self.children[0])
+SymbolAST = make_ast('SymbolAST', ['expr'])
 StringAST = make_ast('String', ['string'])
 FuncApplicationAST = make_ast('FuncApply', ['funcName', '*args'])
 
@@ -396,14 +404,276 @@ def parse(ts):
     _parse_expr()
     return STACK.pop()
 
-def eval(ast):
+class LispValue(ABC):
+    @abstractmethod
+    def __repr__(self):
+        pass
+
+    @abstractproperty
+    def value(self):
+        '''Extract the python value from this LispValue
+        '''
+
+    @abstractproperty
+    def children(self):
+        '''Extract the child LispValue's from this one
+        '''
+
+class LispNum(LispValue):
+    def __init__(self, num):
+        self._num = num
+
+    @property
+    def value(self):
+        return self._num
+
+    @property
+    def children(self):
+        return ()
+
+    def __repr__(self):
+        return repr(self.value)
+
+class LispString(LispValue):
+    def __init__(self, s):
+        self._s = s
+
+    @property
+    def value(self):
+        return self._s
+
+    @property
+    def children(self):
+        return ()
+
+    def __repr__(self):
+        return '"{}"'.format(self._s)
+
+class LispSymbol(LispValue):
+    '''A symbol is just a lisp expression
+    that hasn't been evaluated yet
+    '''
+
+    def __init__(self, ast):
+        self._ast = ast
+
+    @property
+    def value(self):
+        return self._ast
+
+    @property
+    def children(self):
+        return ()
+
+    def __repr__(self):
+        return repr(self._ast)
+
+class LispPair(LispValue):
+    def __init__(self, lhs, rhs):
+        self._lhs = lhs
+        self._rhs = rhs
+
+    @property
+    def value(self):
+        return (self._lhs.value, self._rhs.value)
+
+    @property
+    def children(self):
+        return (self._lhs, self._rhs)
+
+    def __repr__(self):
+        lhs, rhs = self.children
+        sb = '(' + repr(lhs)
+
+        if type(rhs) == LispPair:
+            while True:
+                lhs, rhs = rhs.children
+                sb += ' '
+                sb += repr(lhs)
+                if type(rhs) == LispEmptyList:
+                    sb += ')'
+                    break
+                elif type(rhs) != LispPair:
+                    sb += ' . '
+                    sb += repr(rhs)
+                    sb += ')'
+                    break
+        elif type(rhs) == LispEmptyList:
+            sb += ')'
+        else:
+            sb += ' . {})'.format(repr(rhs))
+
+        return sb
+
+class LispEmptyList(LispPair):
+    def __init__(self):  
+        pass
+
+    @property
+    def value(self):
+        return ()
+
+    @property
+    def children(self):
+        return ()
+
+    def __repr__(self):
+        return '()'
+
+class LispProc(LispValue):
+    def __init__(self, argNames, bodyAST):
+        self._args = argNames
+        self._body = bodyAST
+
+    @property
+    def value(self):
+        return (self._args, self._body)
+
+    @property
+    def children(self):
+        return (self._args, self._body)
+
+    def __repr__(self):
+        return '<procedure: {}>'.format(repr(self.children[1]))
+
+def _eval_expr(env, expr):
+    if expr.ofType(FuncApplicationAST):
+        return _eval_func_apply(env, expr)
+    else:
+        return _eval_atom(env, expr)
+
+def _eval_func_apply(env, expr):
+    if expr.children is []:
+        raise ValueError('EvalError: Found no body')
+
+    f, *args = expr.children
+
+    # check for special forms
+    if f.ofType(NameAST):
+        name, = f.children
+        if name == 'if':
+            return _eval_if(env, args)
+        elif name == 'let':
+            bindings = args[0].children
+            body = args[1]
+            return _eval_let(env, bindings, body)
+        elif name == 'let*':
+            bindings = args[0].children
+            body = args[1]
+            return _eval_let(env, bindings, body)
+
+    f_value = _eval_expr(env, f)
+    # call-by-value
+    arg_values = map(partial(_eval_expr, env), args)
+    return f_value(*arg_values)
+
+def _eval_if(env, exprs):
+    '''TODO: Booleans'''
+    raise NotImplementedError
+
+def _eval_let(env, bindings, body):
+    # create a copy
+    newEnv = dict(env) 
+
+    for binding in bindings:
+        if not binding.ofType(FuncApplicationAST):
+            raise ValueError('EvalError: `let` must take arguments in format (let [(b0 x0) (b1 x1)] [body])')
+            
+        name, value_ast = binding.children
+        name, = name.children
+        newEnv[name] = _eval_expr(env, value_ast)
+
+    return _eval_expr(newEnv, body)
+
+def _eval_let(env, bindings, body):
+    # create a copy
+    for binding in bindings:
+        if not binding.ofType(FuncApplicationAST):
+            raise ValueError('EvalError: `let` must take arguments in format (let [(b0 0) (b1 x1)] [body])')
+            
+        name, value_ast = binding.children
+        name, = name.children
+        env[name] = _eval_expr(env, value_ast)
+
+    return _eval_expr(env, body)
+
+def _eval_atom(env, atom):
+    if atom.ofType(SymbolAST):
+        try:
+            f, = atom.children
+            if f.ofType(FuncApplicationAST):
+                args, = f.children
+                if tuple(args) == ():
+                    return LispEmptyList()
+        except:
+            pass
+        return LispSymbol(atom)
+    elif atom.ofType(StringAST):
+        return LispString(atom.children[0])
+    elif atom.ofType(NumAST):
+        real,imag = atom.children
+        if imag == 0:
+            return LispNum(real)
+        else:
+            # use python's built-in complex numbers
+            return LispNum(real + imag*(1.0j))
+    elif atom.ofType(NameAST):
+        name, = atom.children
+        if name not in env:
+            raise ValueError('EvalError: Name `{}` undefined.'.format(name))
+        return env[name]
+
+def evaluate(ast):
     '''Does semantical evaluation on some given :class:`AST` *ast*
     Returning the python object which best represents the output
     
     If the interpreter for any reason cannot determine semantics, this raies `~ValueError`
     '''
 
-    raise ValueError
+    def fold(f, c, xs):
+        if len(xs) == 0: 
+            return c
+        x, *xs = xs
+        return fold(f, f(c,x), xs)
+
+    def f_cons(l, r):
+        return LispPair(l, r)
+
+    def f_car(pair):
+        return pair._lhs
+
+    def f_cdr(pair):
+        return pair._rhs
+
+    def f_cadr(pair):
+        return f_cdr(pair._rhs)
+
+    def f_list(*args):
+        if len(args) != 0:
+            l = LispEmptyList()
+            for x in reversed(args):
+                l = LispPair(x, l)
+            return l
+        else:
+            return LispEmptyList()
+
+    def get_value(x):
+        return x.value
+
+    defaultEnv = {
+        '+': lambda *x: LispNum(sum(map(get_value, x))),
+        '*': lambda *x: LispNum(fold(lambda a,b: a*b, 1, map(get_value, x))),
+        'list': f_list,
+        'cons': f_cons,
+        'car': f_car,
+        'cdr': f_cdr,
+        'cadr': f_cadr,
+        'eval': lambda *x: defaultEnv, # need to put defaultEnv in the co_freevars property
+    }
+
+    # overwrite the __code__ so we don't rebuild defaultEnv every time (eval ...) happens.
+    defaultEnv['eval'].__code__ = (lambda x: _eval_expr(defaultEnv, next(x).value.children[0])).__code__
+    return _eval_expr(defaultEnv, ast)
 
 class Lisp(Plugin):
     '''Performs evaluations on given strings interpreted as a scheme/lisp input
@@ -424,12 +694,32 @@ class Lisp(Plugin):
         return parse(tks)
 
     def _eval(self, s):
-        raise NotImplementedError
+        tks = self._lex(s)
+        ast = self._parse(tks)
+        return evaluate(ast)
 
     @Plugin.command('eval')
     def do_eval(self, e):
         '''Evaluate the data in *e* as if it were a lisp string
         Sending the reply
         '''
+        try:
+            r = self._eval(e['data'])
+            e.reply(repr(r))
+        except ValueError as e:
+            e.reply(str(e))
 
-        raise NotImplementedError
+if __name__ == '__main__':
+    ## REPL
+    matches = build_lexchar_dict(**SYMBOL_LUT)
+    symbols = SYMBOLS
+
+    lexeme_dict = LexemeDict(matches)
+    program_dict = ProgramDict(symbols, lexeme_dict)
+
+    while True:
+        s = input()
+        tks = lex(program_dict, s)
+        ast = parse(tks)
+        res = evaluate(ast)
+        print(res)
