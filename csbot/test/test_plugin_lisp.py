@@ -8,6 +8,8 @@ lexer_test_cases_language_symbols = [
     (')', [TT.R_PAREN],   [')']),
     ('[', [TT.L_BRACKET], ['[']),
     (']', [TT.R_BRACKET], [']']),
+    ('#t', [TT.BOOL_TRUE], ['#t']),
+    ('#f', [TT.BOOL_FALSE], ['#f']),
 ]
 
 lexer_test_cases_match_symbols = [
@@ -111,6 +113,10 @@ parser_test_cases_atoms = [
 
     # names
     ('f', NameAST, ['f']),
+    
+    # bools
+    ('#f', BoolAST, [False]),
+    ('#t', BoolAST, [True]),
 ]
 
 parser_test_cases_exprs = [
@@ -151,6 +157,8 @@ class TestParser(BotTestCase):
 
 eval_test_cases_exprs = [
     ('(+ 1 2)', 3),
+    ('(+ (+ 1 2) 3)', 6),
+    ('(* (+ 1 2) 3)', 9),
 ]
 
 eval_test_cases_lists = [

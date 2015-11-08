@@ -41,11 +41,16 @@ class TokenType(Enum):
     REAL = 9
     IMAGINARY = 10
 
+    BOOL_TRUE = 11
+    BOOL_FALSE = 12
+
 SYMBOL_LUT = {
     '(': TokenType.L_PAREN,
     ')': TokenType.R_PAREN,
     '[': TokenType.L_BRACKET,
-    ']': TokenType.R_BRACKET
+    ']': TokenType.R_BRACKET,
+    '#t': TokenType.BOOL_TRUE,
+    '#f': TokenType.BOOL_FALSE,
 }
 
 # Symbols do not require whitespace between them
@@ -106,11 +111,12 @@ def make_ast(name, arg_names=[]):
 
     return _AST
 
-NameAST = make_ast('Name', ['name'])
+NameAST = make_ast('NameAST', ['name'])
+BoolAST = make_ast('BoolAST', ['bool'])
 NameAST.__repr__ = lambda self: str(self.children[0])
 SymbolAST = make_ast('SymbolAST', ['expr'])
-StringAST = make_ast('String', ['string'])
-FuncApplicationAST = make_ast('FuncApply', ['funcName', '*args'])
+StringAST = make_ast('StringAST', ['string'])
+FuncApplicationAST = make_ast('FuncApplyAST', ['funcName', '*args'])
 
 
 def build_lexchar_dict(**words):
@@ -297,7 +303,11 @@ def push(p):
 def _lookahead_token():
     global _CURRENT_TOKEN
     if _CURRENT_TOKEN is None:
-        _CURRENT_TOKEN = next(TOKENS)
+        try:
+            _CURRENT_TOKEN = next(TOKENS)
+        except StopIteration:
+            raise ValueError('ParseError: Unexepctedly reached end of stream')
+
 
     return _CURRENT_TOKEN
 
@@ -356,6 +366,10 @@ def _parse_atom():
         _parse_expr()
         push(SymbolAST(pop()))
         return
+    elif lookahead() == TokenType.BOOL_TRUE:
+        push(BoolAST(True))
+    elif lookahead() == TokenType.BOOL_FALSE:
+        push(BoolAST(False))
     else:
         # anything left *must* be a name
         # else it's a parse error
@@ -409,6 +423,9 @@ class LispValue(ABC):
     def __repr__(self):
         pass
 
+    def __eq__(self, other):
+        return self.value == other.value
+
     @abstractproperty
     def value(self):
         '''Extract the python value from this LispValue
@@ -448,6 +465,23 @@ class LispString(LispValue):
 
     def __repr__(self):
         return '"{}"'.format(self._s)
+
+class LispBool(LispValue):
+    def __init__(self, b):
+        self._b = b
+
+    @property
+    def value(self):
+        return self._b
+
+    @property
+    def children(self):
+        return ()
+
+    def __repr__(self):
+        if self._b:
+            return '#t'
+        return '#f'
 
 class LispSymbol(LispValue):
     '''A symbol is just a lisp expression
@@ -553,6 +587,8 @@ def _eval_func_apply(env, expr):
         name, = f.children
         if name == 'if':
             return _eval_if(env, args)
+        elif name == 'lambda':
+            raise NotImplementedError
         elif name == 'let':
             bindings = args[0].children
             body = args[1]
@@ -568,8 +604,12 @@ def _eval_func_apply(env, expr):
     return f_value(*arg_values)
 
 def _eval_if(env, exprs):
-    '''TODO: Booleans'''
-    raise NotImplementedError
+    cond, if_true, if_false = exprs
+    b = _eval_expr(env, cond)
+    if b.value:
+        return _eval_expr(env, if_true)
+    else:
+        return _eval_expr(env, if_false)
 
 def _eval_let(env, bindings, body):
     # create a copy
@@ -622,6 +662,9 @@ def _eval_atom(env, atom):
         if name not in env:
             raise ValueError('EvalError: Name `{}` undefined.'.format(name))
         return env[name]
+    else:
+        b, = atom.children
+        return LispBool(b)
 
 def evaluate(ast):
     '''Does semantical evaluation on some given :class:`AST` *ast*
@@ -631,10 +674,11 @@ def evaluate(ast):
     '''
 
     def fold(f, c, xs):
-        if len(xs) == 0: 
+        try:
+            x, *xs = xs
+            return fold(f, f(c,x), xs)
+        except ValueError:
             return c
-        x, *xs = xs
-        return fold(f, f(c,x), xs)
 
     def f_cons(l, r):
         return LispPair(l, r)
@@ -657,12 +701,26 @@ def evaluate(ast):
         else:
             return LispEmptyList()
 
+    def f_eq(a, b):
+        return LispBool(a == b)
+
+    def f_eq_num(a, b):
+        if (type(a), type(b)) != (LispNum, LispNum):
+            raise ValueError('EvalError: (=) expects numbers')
+        return LispBool(a == b)
+
     def get_value(x):
         return x.value
 
     defaultEnv = {
         '+': lambda *x: LispNum(sum(map(get_value, x))),
         '*': lambda *x: LispNum(fold(lambda a,b: a*b, 1, map(get_value, x))),
+
+        'eq?': f_eq,
+        'eqv?': f_eq,
+        'equal?': f_eq,
+
+        '=': f_eq_num,
         'list': f_list,
         'cons': f_cons,
         'car': f_car,
@@ -717,9 +775,26 @@ if __name__ == '__main__':
     lexeme_dict = LexemeDict(matches)
     program_dict = ProgramDict(symbols, lexeme_dict)
 
+    def _unmatched(s):
+        if not s:
+            return 0
+        c, *s = s
+        s = ''.join(s)
+        if c in ('(', '['):
+            return 1 + _unmatched(s)
+        if c in (')', ']'):
+            return _unmatched(s) - 1
+        return _unmatched(s)
+
+    s = ''
+    k = 0
     while True:
-        s = input()
-        tks = lex(program_dict, s)
-        ast = parse(tks)
-        res = evaluate(ast)
-        print(res)
+        s_ = input('> ')
+        s += s_
+        k = k + _unmatched(s_)
+        if not k:
+            tks = lex(program_dict, s)
+            ast = parse(tks)
+            res = evaluate(ast)
+            print(res)
+            s = ''; k = 0
