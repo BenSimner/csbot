@@ -6,15 +6,12 @@ from abc import ABC, abstractmethod, abstractproperty
 from csbot.plugin import Plugin
 
 Token = namedtuple('Token', ['token_type', 'lexeme'])
-MATCHES = None
-'''String matching tree'''
 
 class TokenType(Enum):
     UNKNOWN = 0
     
-    # Scheme Names are standard variable names
+    # Scheme Names are standard variable names 
     # they are a string of any non-reserved non-whitespace printable characters 
-    # and are not Symbols
     NAME = 1
     
     # Scheme Symbols are the symbol \' (apostrophe) followed by a Name
@@ -32,7 +29,8 @@ class TokenType(Enum):
     R_BRACKET = 7
 
     NUMBER = 8
-    IMAGINARY = 9
+    REAL = 9
+    IMAGINARY = 10
 
 SYMBOL_LUT = {
     '(': TokenType.L_PAREN,
@@ -43,22 +41,6 @@ SYMBOL_LUT = {
 
 # Symbols do not require whitespace between them
 SYMBOLS = ('(', ')', '[', ']')
-
-class AST(ABC):
-    '''The abstract-syntax-tree base for a scheme-like language
-
-    An AST can have a list of child :class:`AST`s
-    '''
-
-    def ofType(self, cls):
-        '''Helper function to test whether two :class:`AST` instances are infact instances of the the same class
-        '''
-        return type(self) == cls
-    
-    @abstractproperty
-    def children(self):
-        '''Returns an iterable of children :class:`AST`s associated with this class
-        '''
 
 def build_lexchar_dict(**words):
     '''Given a map of strings->``TokenType`` *words* build a tree from a dict allowing easy checking of a word.'''
@@ -72,6 +54,7 @@ def build_lexchar_dict(**words):
 
     return matches
 
+
 class LexCharDict(defaultdict):
     '''A ``defaultdict`` which maps single characters to other defaultdicts
         this behaves as a tree, allowing lookup of tokentypes of lexeme's incrementally in a loop
@@ -80,23 +63,59 @@ class LexCharDict(defaultdict):
     the :class:`TokenType` of the given input string.
     '''
 
-    def __init__(self, tok=None):
+    def __init__(self, char=None, tok=None):
         super().__init__()
+        self._char = char
         self._tok = tok
         
     def __missing__(self, k):
-        d = self.__class__(self._tok)
+        d = self.__class__(k, self._tok)
 
-        if self._tok in (None, '.', TokenType.NUMBER):
+        # handle strings (enclosed in ``"``)
+        if k == '"':
+            if self._tok is None:
+                d._char = ''
+                d._tok = 'unmatched_string'
+            if self._tok is 'unmatched_string':
+                d._char = ''
+                d._tok = TokenType.STRING
+        elif k == '\\' and self._tok is 'unmatched_string':
+            # handle escaped characters
+            # by automatically adding escaped characters to d
+            d['"'] = self.__class__('"', 'unmatched_string')
+            c = d['"']
+            c._char = '"'
+            c = d['n']
+            c._char = '\n'
+            c = d['t']
+            c._char = '\t'
+            d['\\'] = self.__class__('\\', None)
+            c = d['\\']
+            c._char = '\\'
+            c._tok = self._tok
+            d._char = ''
+
+        # handle symbols
+        elif k == '\'':
+            if self._tok is None:
+                d._char = ''
+                d._tok = 'unfinished_symbol'
+        elif self._tok == 'unfinished_symbol':
+            d._tok = TokenType.SYMBOL
+
+        # handle numbers
+        elif self._tok in (None, '.', TokenType.REAL, TokenType.NUMBER):
             try:
                 int(k)
-                if d._tok in (None, '.'):
+                if d._tok is None:
                     d._tok = TokenType.NUMBER
+                elif d._tok is '.':
+                    d._tok = TokenType.REAL
             except:
-                if self._tok == TokenType.NUMBER:
-                    if k == 'i':
-                        d._tok = TokenType.IMAGINARY
-                    elif k == '.':
+                if k == 'i' and self._tok in (TokenType.NUMBER, TokenType.REAL):
+                    d._tok = TokenType.IMAGINARY
+                elif self._tok == TokenType.NUMBER:
+                    if k == '.':
                         d._tok = '.'
                     else:
                         d._tok = TokenType.NAME
@@ -109,25 +128,27 @@ class LexCharDict(defaultdict):
         return d
 
 class LexemeDict(defaultdict):
-    '''A ``defaultdict`` which maps lexeme's (strings) to their token types
+    '''A ``defaultdict`` which maps lexeme's (strings) to their tokens
     '''
     def __init__(self, matches):
         super().__init__()
         self._matches = matches
 
-    def check_type(self, tok):
+    def check_type(self, word, tok):
         if type(tok) == str:
-            raise ValueError('LexerError: Unexpected `{}`'.format(tok))
+            raise ValueError('LexerError: Unexpected `{}` when lexing `{}`'.format(tok, word))
 
     def __missing__(self, lex):
         match = self._matches
 
+        word = ''
         for letter in lex:
             match = match[letter]
+            word += match._char
 
-        self.check_type(match._tok)
 
-        self[lex] = match._tok
+        self.check_type(lex, match._tok)
+        self[lex] = Token(match._tok, word)
         return self[lex]
 
 class ProgramDict(defaultdict):
@@ -145,17 +166,33 @@ class ProgramDict(defaultdict):
 
         def _gen():
             word = ''
+            string = False
+            escape = False
             for letter in s:
+                # logic for handling strings
+                # this is the only place where whitespace doesn't break up tokens
+                if letter == '"':
+                    if not escape:
+                        string = not string
+                    word += letter
+                    continue
+                elif string:
+                    word += letter
+                    escape = False
+                    if letter == '\\':
+                        escape = True
+                    continue
+
                 if letter in whitespace or letter in symbols:
                     if word:
-                        yield Token(lex_dict[word], word)
+                        yield lex_dict[word]
                     if letter in symbols:
-                        yield Token(lex_dict[letter], letter)
+                        yield lex_dict[letter]
                     word = ''
                 else:
                     word += letter
             if word:
-                yield Token(lex_dict[word], word)
+                yield lex_dict[word]
 
         self[s] = _gen()
         return self[s]
@@ -177,7 +214,7 @@ def parse(ts):
     If *ts* is invalid, this raises `~ValueError`
     '''
 
-    raise ValueError
+    raise NotImplementedError
 
 def eval(ast):
     '''Does semantical evaluation on some given :class:`AST` *ast*
@@ -186,7 +223,7 @@ def eval(ast):
     If the interpreter for any reason cannot determine semantics, this raies `~ValueError`
     '''
 
-    raise ValueError
+    raise NotImplementedError
 
 class Lisp(Plugin):
     '''Performs evaluations on given strings interpreted as a scheme/lisp input
