@@ -42,6 +42,76 @@ SYMBOL_LUT = {
 # Symbols do not require whitespace between them
 SYMBOLS = ('(', ')', '[', ']')
 
+class AST(ABC):
+    '''The abstract-syntax-tree base for a scheme-like language
+
+    An AST can have a list of child :class:`AST`s
+    '''
+
+    def ofType(self, cls):
+        '''Helper function to test whether two :class:`AST` instances are infact instances of the the same class
+        '''
+        return type(self) == cls
+
+    def __eq__(self, other):
+        '''Equality is defined over the children
+        '''
+        return self.children == other.children and type(other) == type(self)
+
+    @abstractproperty
+    def children(self):
+        '''Returns an iterable of children :class:`AST`s associated with this class
+        '''
+
+    def __repr__(self):
+        return '<{}: children={}>'.format(self.__class__.__name__, list(map(repr,self.children)))
+
+class NumAST(AST):
+    def __init__(self, real, imaginary=0):
+        self._real = real
+        self._imaginary = imaginary
+
+    @property
+    def children(self):
+        '''For atomic values (numbers, symbols, strings...)
+        the values returned by ``children`` are python built-ins and not :class:`AST`s
+        '''
+
+        return [self._real, self._imaginary]
+
+class ListAST(AST):
+    '''Special AST representing quoted lists
+    '''
+    def __init__(self, *args):
+        self._children = args
+    @property
+    def children(self):
+        return self._children
+
+def make_ast(name, arg_names=[]):
+    class _AST(AST):
+        def __init__(self,*args):
+            self._children = args
+        @property
+        def children(self):
+            return self._children
+
+    _AST.__name__ = name
+    _AST.__qualname__ = name
+
+    doc='''Arguments:
+ - {}
+    '''.format('\n - '.join(arg_names))
+    _AST.__doc__ = doc
+
+    return _AST
+
+NameAST = make_ast('Name', ['name'])
+SymbolAST = make_ast('Symbol', ['symbol'])
+StringAST = make_ast('String', ['string'])
+FuncApplicationAST = make_ast('FuncApply', ['funcName', '*args'])
+
+
 def build_lexchar_dict(**words):
     '''Given a map of strings->``TokenType`` *words* build a tree from a dict allowing easy checking of a word.'''
     matches = LexCharDict()
@@ -207,14 +277,117 @@ def lex(program_dict, s):
 
     return program_dict[s]
 
+TOKENS = None
+STACK = None
+_CURRENT_TOKEN = None
+
+def pop():
+    return STACK.pop()
+
+def push(p):
+    STACK.append(p)
+
+## Lookahead Functions
+
+def _lookahead_token():
+    global _CURRENT_TOKEN
+    if _CURRENT_TOKEN is None:
+        _CURRENT_TOKEN = next(TOKENS)
+
+    return _CURRENT_TOKEN
+
+def lookahead():
+    return _lookahead_token().token_type
+
+def lexeme():
+    return _lookahead_token().lexeme
+
+def accept(token_type):
+    if lookahead() != token_type:
+        raise ValueError('ParseError: Expected {}, got {}'.format(token_type, lookahead()))
+
+    global _CURRENT_TOKEN
+    _CURRENT_TOKEN = None
+
+def lookahead_open():
+    return lookahead() in (TokenType.L_PAREN, TokenType.L_BRACKET)
+
+def accept_open():
+    '''Accept an opening bracket/paren
+    and return the expected closing bracket/paren
+    '''
+    if lookahead() == TokenType.L_PAREN:
+        accept(TokenType.L_PAREN)
+        return TokenType.R_PAREN
+
+    accept(TokenType.L_BRACKET)
+    return TokenType.R_BRACKET
+
+
+def _parse_expr():
+    '''Parse a scheme expression
+    '''
+    if lookahead_open():
+        close = accept_open()
+        _parse_func_call(close)
+    else:
+        _parse_atom()
+
+def _parse_atom():
+    if lookahead() == TokenType.NUMBER:
+        num = int(lexeme())
+        push(NumAST(num))
+    elif lookahead() == TokenType.REAL:
+        num = float(lexeme())
+        push(NumAST(num))
+    elif lookahead() == TokenType.IMAGINARY:
+        num = float(lexeme()[:-1])  # strip the i
+        push(NumAST(0, num))
+    elif lookahead() == TokenType.STRING:
+        s = lexeme()
+        push(StringAST(s))
+    elif lookahead() == TokenType.SYMBOL:
+        s = lexeme()
+        push(SymbolAST(s))
+    else:
+        # anything left *must* be a name
+        # else it's a parse error
+        _parse_name()
+        return
+
+    accept(lookahead())
+
+def _parse_name():
+    s = lexeme()
+    accept(TokenType.NAME)
+    push(NameAST(s))
+
+def _parse_func_call(close_block):
+    '''Parses a function call from the first expr in the parens
+    '''
+    _parse_expr()
+    func = pop()
+
+    exprs = []
+    while lookahead() != close_block:
+        _parse_expr()
+        expr = pop()
+        exprs.append(expr)
+
+    push(FuncApplicationAST(func, *exprs))
+    accept(close_block)
+
 def parse(ts):
     '''Performs syntactical analysis on the given iterable of tokens *ts*
 
     If *ts* is a valid iterable of tokens, this returns an :class:`AST`.
     If *ts* is invalid, this raises `~ValueError`
     '''
-
-    raise NotImplementedError
+    global TOKENS,STACK
+    TOKENS = ts
+    STACK = []
+    _parse_expr()
+    return STACK.pop()
 
 def eval(ast):
     '''Does semantical evaluation on some given :class:`AST` *ast*
@@ -223,7 +396,7 @@ def eval(ast):
     If the interpreter for any reason cannot determine semantics, this raies `~ValueError`
     '''
 
-    raise NotImplementedError
+    raise ValueError
 
 class Lisp(Plugin):
     '''Performs evaluations on given strings interpreted as a scheme/lisp input
@@ -241,7 +414,7 @@ class Lisp(Plugin):
         return lex(program_dict, s)
 
     def _parse(self, tks):
-        raise NotImplementedError
+        return parse(tks)
 
     def _eval(self, s):
         raise NotImplementedError
