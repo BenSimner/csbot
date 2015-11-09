@@ -7,7 +7,7 @@ The most over-engineered implementation of a lisp-like language i could over-eng
 from string import whitespace
 from enum import Enum
 from collections import namedtuple, defaultdict
-from functools import partial
+from functools import partial, reduce
 from abc import ABC, abstractmethod, abstractproperty
 
 from csbot.plugin import Plugin
@@ -41,6 +41,7 @@ class TokenType(Enum):
     REAL = 9
     IMAGINARY = 10
 
+    # Literal booleans
     BOOL_TRUE = 11
     BOOL_FALSE = 12
 
@@ -51,10 +52,16 @@ SYMBOL_LUT = {
     ']': TokenType.R_BRACKET,
     '#t': TokenType.BOOL_TRUE,
     '#f': TokenType.BOOL_FALSE,
+    '\'': TokenType.APOSTROPHE,
 }
 
 # Symbols do not require whitespace between them
 SYMBOLS = ('(', ')', '[', ']')
+
+# literals are atomic values
+#  i.e. values that evaluate to themselves
+LITERALS = (TokenType.STRING, TokenType.NUMBER, TokenType.REAL, 
+            TokenType.IMAGINARY, TokenType.BOOL_TRUE, TokenType.BOOL_FALSE)
 
 class AST(ABC):
     '''The abstract-syntax-tree base for a scheme-like language
@@ -70,7 +77,7 @@ class AST(ABC):
     def __eq__(self, other):
         '''Equality is defined over the children
         '''
-        return self.children == other.children and type(other) == type(self)
+        return type(other) == type(self) and self.children == other.children
 
     @abstractproperty
     def children(self):
@@ -159,24 +166,12 @@ class LexCharDict(defaultdict):
         elif k == '\\' and self._tok is 'unmatched_string':
             # handle escaped characters
             # by automatically adding escaped characters to d
-            d['"'] = self.__class__('"', 'unmatched_string')
-            c = d['"']
+            c = d['"'] = self.__class__('"', 'unmatched_string')
             c._char = '"'
-            c = d['n']
-            c._char = '\n'
-            c = d['t']
-            c._char = '\t'
-            d['\\'] = self.__class__('\\', None)
-            c = d['\\']
-            c._char = '\\'
-            c._tok = self._tok
-            d._char = ''
-
-        # handle symbols
-        elif k == '\'':
-            if self._tok is None:
-                d._char = '\''
-                d._tok = TokenType.APOSTROPHE
+            c = d['n']; c._char = '\n'
+            c = d['t']; c._char = '\t'
+            c = d['\\'] = self.__class__('\\', None)
+            c._char = '\\'; c._tok = self._tok; d._char = ''
 
         # handle numbers
         elif self._tok in (None, '.', TokenType.REAL, TokenType.NUMBER):
@@ -362,9 +357,14 @@ def _parse_atom():
         s = lexeme()
         push(StringAST(s))
     elif lookahead() == TokenType.APOSTROPHE:
+        # TODO:
+        # quoted literals are literals
+        # quoted list is list of quotes
+        # eval on above should coerce into ASTs
         accept(TokenType.APOSTROPHE)
         _parse_expr()
-        push(SymbolAST(pop()))
+        ast = pop()
+        push(SymbolAST(ast))
         return
     elif lookahead() == TokenType.BOOL_TRUE:
         push(BoolAST(True))
@@ -424,7 +424,7 @@ class LispValue(ABC):
         pass
 
     def __eq__(self, other):
-        return self.value == other.value
+        return self.value == other.value and type(self) == type(other)
 
     @abstractproperty
     def value(self):
@@ -555,13 +555,24 @@ class LispEmptyList(LispPair):
         return '()'
 
 class LispProc(LispValue):
-    def __init__(self, argNames, bodyAST):
+    def __init__(self, argNames, bodyAST, env):
         self._args = argNames
         self._body = bodyAST
+        self._env = env
 
     @property
     def value(self):
-        return (self._args, self._body)
+        return (self._args, self._body, self._env)
+
+    def __call__(self, *args):
+        '''Calling a LispProc is equivalent to calling the procedure it represents'''
+        params, body, env = self.value
+        env = dict(env)
+        for param, arg in zip(params, args):
+            name, = param.children
+            env[name] = arg
+
+        return _eval_expr(env, body)
 
     @property
     def children(self):
@@ -588,7 +599,10 @@ def _eval_func_apply(env, expr):
         if name == 'if':
             return _eval_if(env, args)
         elif name == 'lambda':
-            raise NotImplementedError
+            # (lambda (x y z) body)
+            params = args[0].children
+            body = args[1]
+            return LispProc(params, body, env)
         elif name == 'let':
             bindings = args[0].children
             body = args[1]
@@ -612,9 +626,7 @@ def _eval_if(env, exprs):
         return _eval_expr(env, if_false)
 
 def _eval_let(env, bindings, body):
-    # create a copy
     newEnv = dict(env) 
-
     for binding in bindings:
         if not binding.ofType(FuncApplicationAST):
             raise ValueError('EvalError: `let` must take arguments in format (let [(b0 x0) (b1 x1)] [body])')
@@ -639,6 +651,7 @@ def _eval_let(env, bindings, body):
 
 def _eval_atom(env, atom):
     if atom.ofType(SymbolAST):
+        # handle '() for emptylist
         try:
             f, = atom.children
             if f.ofType(FuncApplicationAST):
@@ -666,71 +679,98 @@ def _eval_atom(env, atom):
         b, = atom.children
         return LispBool(b)
 
-def evaluate(ast):
+### Environment Functions
+def f_cons(l, r): return LispPair(l, r)
+def f_car(pair): return pair._lhs
+def f_cdr(pair): return pair._rhs
+def f_list(*args):
+    if len(args) != 0:
+        l = LispEmptyList()
+        for x in reversed(args):
+            l = LispPair(x, l)
+        return l
+    else:
+        return LispEmptyList()
+# pointer equality by checking whether the two LispValue's 
+# are actually the same PyObject
+def f_p_eq(a, b): return LispBool(a is b)
+def f_eq(a, b): return LispBool(a == b)
+def f_eq_num(a, b):
+    if (type(a), type(b)) != (LispNum, LispNum):
+        raise ValueError('EvalError: (=) expects numbers')
+    return LispBool(a == b)
+def f_sub(*x):
+    if len(x) == 1:
+        return LispNum(-x[0].value)
+    return LispNum(reduce(lambda a, b: a - b, map(get_value,x)))
+
+def compose(*fs):
+    '''Compose functions together
+    returning a single function.
+    i.e. ``compose(f,g,h)(x) == f(g(h(x)))``
+    '''
+    def _wrapper(*args,**kwargs):
+        *gs, f = fs
+        v = f(*args, **kwargs)
+        for g in reversed(gs):
+            v = g(v)
+        return v
+    return _wrapper
+
+# abstractproperties cannot be mapped over
+def get_value(x):
+    return x.value
+
+def is_list(x):
+    if type(x) is LispEmptyList:
+        return True
+    elif type(x) is LispPair:
+        l,r = x.children
+        return is_list(r)
+    return False
+
+def evaluate(ast, defaultEnv=None):
     '''Does semantical evaluation on some given :class:`AST` *ast*
     Returning the python object which best represents the output
     
     If the interpreter for any reason cannot determine semantics, this raies `~ValueError`
     '''
+    if not defaultEnv:
+        defaultEnv = {
+            '+': lambda *x: LispNum(sum(map(get_value, x))),
+            '*': lambda *x: LispNum(reduce(lambda a,b: a*b, map(get_value, x))),
+            '-': f_sub,
+            '/': lambda *x: LispNum(reduce(lambda a,b: a/b, map(get_value, x))),
 
-    def fold(f, c, xs):
-        try:
-            x, *xs = xs
-            return fold(f, f(c,x), xs)
-        except ValueError:
-            return c
+            # 'type' predicates
+            'eq?': f_p_eq,
+            'eqv?': f_eq,
+            'equal?': f_eq,
+            'list?': lambda x: LispBool(type(x) is LispPair and is_list(x)),
+            'pair?': lambda x: LispBool(type(x) is LispPair),
+            'integer?': lambda x: LispBool(type(x) is LispNum),
+            'number?': lambda x: LispBool(type(x) is LispNum),
+            'real?': lambda x: LispBool(type(x) is LispNum and x.children[1] is 0),
+            'complex?': lambda x: LispBool(type(x) is LispNum),
+            'symbol?': lambda x: LispBool(type(x) is LispSymbol),
+            'string?': lambda x: LispBool(type(x) is LispString),
+            'boolean?': lambda x: LispBool(type(x) is LispBool),
 
-    def f_cons(l, r):
-        return LispPair(l, r)
+            '=': f_eq_num,
+            'list': f_list,
+            'cons': f_cons,
+            'car': f_car,
+            'cdr': f_cdr,
+            'cadr': compose(f_car, f_cdr),
+            'caddr': compose(f_car, f_cdr, f_cdr),
+            'cadddr': compose(f_car, f_cdr, f_cdr, f_cdr),
 
-    def f_car(pair):
-        return pair._lhs
+            'eval': lambda *x: defaultEnv, # need to put defaultEnv in the co_freevars property
+        }
 
-    def f_cdr(pair):
-        return pair._rhs
-
-    def f_cadr(pair):
-        return f_cdr(pair._rhs)
-
-    def f_list(*args):
-        if len(args) != 0:
-            l = LispEmptyList()
-            for x in reversed(args):
-                l = LispPair(x, l)
-            return l
-        else:
-            return LispEmptyList()
-
-    def f_eq(a, b):
-        return LispBool(a == b)
-
-    def f_eq_num(a, b):
-        if (type(a), type(b)) != (LispNum, LispNum):
-            raise ValueError('EvalError: (=) expects numbers')
-        return LispBool(a == b)
-
-    def get_value(x):
-        return x.value
-
-    defaultEnv = {
-        '+': lambda *x: LispNum(sum(map(get_value, x))),
-        '*': lambda *x: LispNum(fold(lambda a,b: a*b, 1, map(get_value, x))),
-
-        'eq?': f_eq,
-        'eqv?': f_eq,
-        'equal?': f_eq,
-
-        '=': f_eq_num,
-        'list': f_list,
-        'cons': f_cons,
-        'car': f_car,
-        'cdr': f_cdr,
-        'cadr': f_cadr,
-        'eval': lambda *x: defaultEnv, # need to put defaultEnv in the co_freevars property
-    }
-
-    # overwrite the __code__ so we don't rebuild defaultEnv every time (eval ...) happens.
-    defaultEnv['eval'].__code__ = (lambda x: _eval_expr(defaultEnv, next(x).value.children[0])).__code__
+        # inject the environment into the call to eval
+        # so we don't rebuild defaultEnv every time (eval ...) happens.
+        defaultEnv['eval'] = partial(evaluate, defaultEnv=defaultEnv)
     return _eval_expr(defaultEnv, ast)
 
 class Lisp(Plugin):
@@ -775,24 +815,24 @@ if __name__ == '__main__':
     lexeme_dict = LexemeDict(matches)
     program_dict = ProgramDict(symbols, lexeme_dict)
 
-    def _unmatched(s):
+    def _count_brackets(s):
         if not s:
             return 0
         c, *s = s
         s = ''.join(s)
         if c in ('(', '['):
-            return 1 + _unmatched(s)
+            return 1 + _count_brackets(s)
         if c in (')', ']'):
-            return _unmatched(s) - 1
-        return _unmatched(s)
+            return _count_brackets(s) - 1
+        return _count_brackets(s)
 
     s = ''
-    k = 0
+    unmatched = 0
     while True:
         s_ = input('> ')
         s += s_
-        k = k + _unmatched(s_)
-        if not k:
+        unmatched = unmatched + _count_brackets(s_)
+        if not unmatched:
             tks = lex(program_dict, s)
             ast = parse(tks)
             res = evaluate(ast)

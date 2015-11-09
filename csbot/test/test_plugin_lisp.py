@@ -163,9 +163,18 @@ eval_test_cases_exprs = [
 
 eval_test_cases_lists = [
     ("'()", ()),
+    ("'(1 2)", (1,(2,()))),
+    ("'(1 x)", (1,(SymbolAST(NameAST('x')),()))),
     ('(list 1 2)', (1,(2,()))),
     ('(cons 1 2)', (1,2)),
     ("(cons 1 '())", (1,())),
+]
+
+eval_test_cases_scopes = [
+    ('(let [(x 1)] x)', 1),
+    ('(let* [(x 1) (x (+ x 1))] x)', 2),
+    ('(let [(f (lambda (x) x))] (f 1))', 1),
+    ('(let [(x 3)] (let [(f (lambda (x) x))] (f 1)))', 1),
 ]
 
 class TestEval(BotTestCase):
@@ -177,8 +186,7 @@ class TestEval(BotTestCase):
     PLUGINS = ['lisp']
 
     def _test(self, cases):
-        for case in cases:
-            s, expected = case
+        for s, expected in cases:
             with self.subTest(s=s):
                 value = self.lisp._eval(s)
                 self.assertEqual(value.value, expected)
@@ -188,4 +196,7 @@ class TestEval(BotTestCase):
 
     def test_eval_lists(self):
         self._test(eval_test_cases_lists)
+
+    def test_eval_scope(self):
+        self._test(eval_test_cases_scopes)
 
