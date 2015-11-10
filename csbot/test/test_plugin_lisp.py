@@ -104,8 +104,8 @@ parser_test_cases_atoms = [
     # symbols
     ("'a", SymbolAST, [NameAST('a')]),
     ("' a", SymbolAST, [NameAST('a')]),
-    ("' (x  y)", SymbolAST, [FuncApplicationAST(NameAST('x'), NameAST('y'))]),
-    ("' (     )", SymbolAST, [FuncApplicationAST([])]),   # special syntax for empty list
+    ("' (x  y)", QuotedListAST, [[SymbolAST(NameAST('x')), SymbolAST(NameAST('y'))]]),
+    ("' (     )", QuotedListAST, [[]]),   # special syntax for empty list
 
     # strings
     ('"abc"', StringAST, ['abc']),
@@ -125,7 +125,8 @@ parser_test_cases_exprs = [
     ('(f x)', FuncApplicationAST, [NameAST('f'), NameAST('x')]),
     ('(f x)', FuncApplicationAST, [NameAST('f'), NameAST('x')]),
     ('(f (x y) x)', FuncApplicationAST, [NameAST('f'), FuncApplicationAST(NameAST('x'), NameAST('y')), NameAST('x')]),
-    ('(list \'(+ 1 2))', FuncApplicationAST, [NameAST('list'), SymbolAST(FuncApplicationAST(NameAST('+'), NumAST(1), NumAST(2)))]),
+    ('(list \'(+ 1 2))', FuncApplicationAST, [NameAST('list'), 
+        QuotedListAST([SymbolAST(NameAST('+')), NumAST(1), NumAST(2)])]),
 ]
 
 class TestParser(BotTestCase):

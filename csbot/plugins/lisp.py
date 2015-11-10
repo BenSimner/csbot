@@ -9,6 +9,7 @@ from enum import Enum
 from collections import namedtuple, defaultdict
 from functools import partial, reduce
 from abc import ABC, abstractmethod, abstractproperty
+from math import log, exp
 
 from csbot.plugin import Plugin
 
@@ -58,11 +59,6 @@ SYMBOL_LUT = {
 # Symbols do not require whitespace between them
 SYMBOLS = ('(', ')', '[', ']')
 
-# literals are atomic values
-#  i.e. values that evaluate to themselves
-LITERALS = (TokenType.STRING, TokenType.NUMBER, TokenType.REAL, 
-            TokenType.IMAGINARY, TokenType.BOOL_TRUE, TokenType.BOOL_FALSE)
-
 class AST(ABC):
     '''The abstract-syntax-tree base for a scheme-like language
 
@@ -79,13 +75,30 @@ class AST(ABC):
         '''
         return type(other) == type(self) and self.children == other.children
 
+    @property
+    def value(self):
+        '''A hook for LispValue.value
+        If a :class:`LispValue` has an :class:`AST` embedded in it 
+        finding the value of that :class:`LispValue` should return just the :class:`AST`
+        '''
+        return self
+
     @abstractproperty
     def children(self):
         '''Returns an iterable of children :class:`AST`s associated with this class
         '''
 
     def __repr__(self):
-        return '<{}: children={}>'.format(self.__class__.__name__, list(map(repr,self.children)))
+        xs = []
+        for x in self.children:
+            if isinstance(x, AST):
+                xs.append(repr(x))
+            else:
+                xs.append(str(x))
+        return '<{}: children=[{}]>'.format(self.__class__.__name__, ','.join(xs))
+
+    def pretty_out(self):
+        raise NotImplementedError
 
 class NumAST(AST):
     def __init__(self, real, imaginary=0):
@@ -99,6 +112,11 @@ class NumAST(AST):
         '''
 
         return [self._real, self._imaginary]
+
+    def pretty_out(self):
+        if self._imaginary:
+            return '{}+{}i'.format(repr(self._real), repr(self._imaginary))
+        return repr(self._real)
 
 def make_ast(name, arg_names=[]):
     class _AST(AST):
@@ -120,11 +138,13 @@ def make_ast(name, arg_names=[]):
 
 NameAST = make_ast('NameAST', ['name'])
 BoolAST = make_ast('BoolAST', ['bool'])
-NameAST.__repr__ = lambda self: str(self.children[0])
+NameAST.pretty_out = lambda self: str(self.children[0])
 SymbolAST = make_ast('SymbolAST', ['expr'])
+SymbolAST.pretty_out = lambda x: x.children[0].pretty_out()
+QuotedListAST = make_ast('QuotedListAST', ['list'])
+QuotedListAST.pretty_out = lambda x: '({})'.format(' '.join(map(repr, x.children[0])))
 StringAST = make_ast('StringAST', ['string'])
-FuncApplicationAST = make_ast('FuncApplyAST', ['funcName', '*args'])
-
+FuncApplicationAST = make_ast('FuncApplicationAST', ['funcName', '*args'])
 
 def build_lexchar_dict(**words):
     '''Given a map of strings->``TokenType`` *words* build a tree from a dict allowing easy checking of a word.'''
@@ -137,7 +157,6 @@ def build_lexchar_dict(**words):
         match._tok=tok # overwrite token type for this match
 
     return matches
-
 
 class LexCharDict(defaultdict):
     '''A ``defaultdict`` which maps single characters to other defaultdicts
@@ -343,6 +362,37 @@ def _parse_expr():
     else:
         _parse_atom()
 
+
+# take an <expr> to be quoted
+# and return the (quote <expr>) version of it.
+# this needs to be an AST so it can be ``dequoteify``'d and evaluated
+# literals are atomic values
+#  i.e. values that evaluate to themselves
+_literals = (StringAST, NumAST, BoolAST)
+def quoteify(ast):
+    if any(map(lambda x: ast.ofType(x), _literals)):
+        return ast
+    elif ast.ofType(QuotedListAST):
+        return ast
+    elif ast.ofType(FuncApplicationAST):
+        xs = ast.children
+        return QuotedListAST(list(map(quoteify,xs)))
+    else:
+        return SymbolAST(ast)
+
+def dequoteify(ast):
+    '''Inverse of ``quoteify``
+    '''
+    if any(map(lambda x: ast.ofType(x), _literals)):
+        return ast
+    elif ast.ofType(QuotedListAST):
+        xs = ast.children[0]
+        return FuncApplicationAST(*map(dequoteify, xs))
+    elif ast.ofType(SymbolAST):
+        symb = ast.children[0]
+        return symb
+    raise ValueError('idk?')
+
 def _parse_atom():
     if lookahead() == TokenType.NUMBER:
         num = int(lexeme())
@@ -364,7 +414,7 @@ def _parse_atom():
         accept(TokenType.APOSTROPHE)
         _parse_expr()
         ast = pop()
-        push(SymbolAST(ast))
+        push(quoteify(ast))
         return
     elif lookahead() == TokenType.BOOL_TRUE:
         push(BoolAST(True))
@@ -390,7 +440,7 @@ def _parse_func_call(close_block):
         # no body
         # whilst this is semantically meaningless
         # it can be valid when quoted
-        push(FuncApplicationAST([]))
+        push(QuotedListAST([]))
         accept(close_block)
         return
 
@@ -419,10 +469,6 @@ def parse(ts):
     return STACK.pop()
 
 class LispValue(ABC):
-    @abstractmethod
-    def __repr__(self):
-        pass
-
     def __eq__(self, other):
         return self.value == other.value and type(self) == type(other)
 
@@ -436,6 +482,19 @@ class LispValue(ABC):
         '''Extract the child LispValue's from this one
         '''
 
+    @abstractproperty
+    def pretty_out(self):
+        '''Generates pretty output'''
+
+    def __repr__(self):
+        xs = []
+        for x in self.children:
+            if isinstance(x, LispValue):
+                xs.append(repr(x))
+            else:
+                xs.append(str(x))
+        return '<{}: children=[{}]>'.format(self.__class__.__name__, ','.join(xs))
+
 class LispNum(LispValue):
     def __init__(self, num):
         self._num = num
@@ -448,8 +507,15 @@ class LispNum(LispValue):
     def children(self):
         return ()
 
-    def __repr__(self):
-        return repr(self.value)
+    def pretty_out(self):
+        # return a lisp-lookalike value
+        if self.value.imag:
+            if self.value.real:
+                return '{}+{}i'.format(self.value.real, self.value.imag)
+            else:
+                return '{}i'.format(self.value.imag)
+
+        return repr(self.value.real)
 
 class LispString(LispValue):
     def __init__(self, s):
@@ -463,7 +529,7 @@ class LispString(LispValue):
     def children(self):
         return ()
 
-    def __repr__(self):
+    def pretty_out(self):
         return '"{}"'.format(self._s)
 
 class LispBool(LispValue):
@@ -478,7 +544,7 @@ class LispBool(LispValue):
     def children(self):
         return ()
 
-    def __repr__(self):
+    def pretty_out(self):
         if self._b:
             return '#t'
         return '#f'
@@ -499,8 +565,11 @@ class LispSymbol(LispValue):
     def children(self):
         return ()
 
+    def pretty_out(self):
+        return self._ast.pretty_out()
+
     def __repr__(self):
-        return repr(self._ast)
+        return '<LispSymbol: {}>'.format(repr(self._ast))
 
 class LispPair(LispValue):
     def __init__(self, lhs, rhs):
@@ -515,27 +584,49 @@ class LispPair(LispValue):
     def children(self):
         return (self._lhs, self._rhs)
 
-    def __repr__(self):
+    @property
+    def value_list(self):
+        '''Gets the value of this LispPair as an iterable
+        if the last value is LispEmptyList, will return a list
+        otherwise will return a tuple
+        '''
         lhs, rhs = self.children
-        sb = '(' + repr(lhs)
+        values = [lhs]
+        if type(rhs) == LispEmptyList:
+            return values
+
+        while True:
+            lhs, rhs = rhs.children
+            values.append(lhs)
+            if type(rhs) == LispEmptyList:
+                return values
+            elif type(rhs) != LispPair:
+                return tuple(values)
+            else:
+                values += rhs.value_list
+                return values
+
+    def pretty_out(self):
+        lhs, rhs = self.children
+        sb = '(' + lhs.pretty_out()
 
         if type(rhs) == LispPair:
             while True:
                 lhs, rhs = rhs.children
                 sb += ' '
-                sb += repr(lhs)
+                sb += lhs.pretty_out()
                 if type(rhs) == LispEmptyList:
                     sb += ')'
                     break
                 elif type(rhs) != LispPair:
                     sb += ' . '
-                    sb += repr(rhs)
+                    sb += rhs.pretty_out()
                     sb += ')'
                     break
         elif type(rhs) == LispEmptyList:
             sb += ')'
         else:
-            sb += ' . {})'.format(repr(rhs))
+            sb += ' . {})'.format(rhs.pretty_out())
 
         return sb
 
@@ -551,7 +642,12 @@ class LispEmptyList(LispPair):
     def children(self):
         return ()
 
-    def __repr__(self):
+    @property
+    def value_list(self):
+        print('value_list!')
+        return []
+
+    def pretty_out(self):
         return '()'
 
 class LispProc(LispValue):
@@ -577,6 +673,9 @@ class LispProc(LispValue):
     @property
     def children(self):
         return (self._args, self._body)
+
+    def pretty_out(self):
+        return '<procedure: {}>'.format(repr(self.children[1]))
 
     def __repr__(self):
         return '<procedure: {}>'.format(repr(self.children[1]))
@@ -651,16 +750,23 @@ def _eval_let(env, bindings, body):
 
 def _eval_atom(env, atom):
     if atom.ofType(SymbolAST):
-        # handle '() for emptylist
-        try:
-            f, = atom.children
-            if f.ofType(FuncApplicationAST):
-                args, = f.children
-                if tuple(args) == ():
-                    return LispEmptyList()
-        except:
-            pass
         return LispSymbol(atom)
+    elif atom.ofType(QuotedListAST):
+        xs = atom.children[0]
+
+        # again a function call with no args
+        # is empty list
+        # this can be parsed as is, with consistency with the 'scm' interpreter
+        if xs == []:
+            return LispEmptyList()
+
+        ys = []
+        for x in xs:
+            if type(x) in _literals:
+                ys.append(_eval_expr(env, x))
+            else:
+                ys.append(x)
+        return f_list(*ys)
     elif atom.ofType(StringAST):
         return LispString(atom.children[0])
     elif atom.ofType(NumAST):
@@ -669,7 +775,7 @@ def _eval_atom(env, atom):
             return LispNum(real)
         else:
             # use python's built-in complex numbers
-            return LispNum(real + imag*(1.0j))
+            return LispNum(real + imag*1j)
     elif atom.ofType(NameAST):
         name, = atom.children
         if name not in env:
@@ -691,6 +797,7 @@ def f_list(*args):
         return l
     else:
         return LispEmptyList()
+    
 # pointer equality by checking whether the two LispValue's 
 # are actually the same PyObject
 def f_p_eq(a, b): return LispBool(a is b)
@@ -729,11 +836,33 @@ def is_list(x):
         return is_list(r)
     return False
 
+def list_to_symbol(x):
+    '''Converts a list of :class:`SymbolAST`, :class:`LispSymbol` or lists of symbols 
+    to a SymbolAST which can be evaluated by :func:`evaluate`
+    '''
+    if type(x) == SymbolAST:
+        return x.children[0]
+    elif type(x) == LispSymbol:
+        # extract AST and try again
+        return list_to_symbol(x.value)
+    elif type(x) == QuotedListAST:
+        return dequoteify(x)
+    elif type(x) == LispPair:
+        # here we have a list of symbols
+        xs = x.value_list
+        return FuncApplicationAST(*map(list_to_symbol, xs))
+    elif type(x) == LispString:
+        return StringAST(x.value)
+    elif type(x) == LispNum:
+        return NumAST(x.value.real, x.value.imag)
+    elif type(x) == LispBool:
+        return BoolAST(x.value)
+
 def evaluate(ast, defaultEnv=None):
-    '''Does semantical evaluation on some given :class:`AST` *ast*
+    '''Evaluation on some given :class:`AST` *ast*
     Returning the python object which best represents the output
     
-    If the interpreter for any reason cannot determine semantics, this raies `~ValueError`
+    If the interpreter for any reason cannot determine semantics, this raises `~ValueError`
     '''
     if not defaultEnv:
         defaultEnv = {
@@ -741,6 +870,8 @@ def evaluate(ast, defaultEnv=None):
             '*': lambda *x: LispNum(reduce(lambda a,b: a*b, map(get_value, x))),
             '-': f_sub,
             '/': lambda *x: LispNum(reduce(lambda a,b: a/b, map(get_value, x))),
+            'exp': lambda x: LispNum(exp(x.value)),
+            'log': lambda x: LispNum(log(x.value)),
 
             # 'type' predicates
             'eq?': f_p_eq,
@@ -771,6 +902,14 @@ def evaluate(ast, defaultEnv=None):
         # inject the environment into the call to eval
         # so we don't rebuild defaultEnv every time (eval ...) happens.
         defaultEnv['eval'] = partial(evaluate, defaultEnv=defaultEnv)
+
+    # ast may not be an ast
+    #  it may be a literal
+    if type(ast) == LispPair:
+        # convert to SymbolAST of FuncApplyAST 
+        # and try evaluate that.
+        return _eval_expr(defaultEnv, list_to_symbol(ast))
+
     return _eval_expr(defaultEnv, ast)
 
 class Lisp(Plugin):
@@ -835,6 +974,10 @@ if __name__ == '__main__':
         if not unmatched:
             tks = lex(program_dict, s)
             ast = parse(tks)
+            print('ast:', repr(ast))
             res = evaluate(ast)
-            print(res)
+            print(res.pretty_out())
+            print('it ::',res.__class__.__name__) # debug
+            print('it =',repr(res)) # debug
+            print(res.value)
             s = ''; k = 0
