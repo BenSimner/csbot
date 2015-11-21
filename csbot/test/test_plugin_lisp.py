@@ -174,6 +174,7 @@ eval_test_cases_lists = [
 eval_test_cases_scopes = [
     ('(let [(x 1)] x)', 1),
     ('(let* [(x 1) (x (+ x 1))] x)', 2),
+    ('(let [(x 3)] (let [(x 1) (y (+ x 1))] y))', 4),
     ('(let [(f (lambda (x) x))] (f 1))', 1),
     ('(let [(x 3)] (let [(f (lambda (x) x))] (f 1)))', 1),
 ]
@@ -200,4 +201,3 @@ class TestEval(BotTestCase):
 
     def test_eval_scope(self):
         self._test(eval_test_cases_scopes)
-

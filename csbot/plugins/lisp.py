@@ -118,33 +118,32 @@ class NumAST(AST):
             return '{}+{}i'.format(repr(self._real), repr(self._imaginary))
         return repr(self._real)
 
-def make_ast(name, arg_names=[]):
-    class _AST(AST):
-        def __init__(self,*args):
-            self._children = args
-        @property
-        def children(self):
-            return self._children
+class BaseAST(AST):
+    def __init__(self,*args):
+        self._children = args
 
-    _AST.__name__ = name
-    _AST.__qualname__ = name
+    @property
+    def children(self):
+        return self._children
 
-    doc='''Arguments:
- - {}
-    '''.format('\n - '.join(arg_names))
-    _AST.__doc__ = doc
+class NameAST(BaseAST):
+    def pretty_out(self):
+        name, = self.children
+        return str(name)
 
-    return _AST
+BoolAST = type('BoolAST', (BaseAST,), {})
+StringAST = type('StringAST', (BaseAST,), {})
+FuncApplicationAST = type('FuncApplicationAST', (BaseAST,), {})
 
-NameAST = make_ast('NameAST', ['name'])
-BoolAST = make_ast('BoolAST', ['bool'])
-NameAST.pretty_out = lambda self: str(self.children[0])
-SymbolAST = make_ast('SymbolAST', ['expr'])
-SymbolAST.pretty_out = lambda x: x.children[0].pretty_out()
-QuotedListAST = make_ast('QuotedListAST', ['list'])
-QuotedListAST.pretty_out = lambda x: '({})'.format(' '.join(map(repr, x.children[0])))
-StringAST = make_ast('StringAST', ['string'])
-FuncApplicationAST = make_ast('FuncApplicationAST', ['funcName', '*args'])
+class SymbolAST(BaseAST):
+    def pretty_out(self):
+        ast, = self.children
+        return ast.pretty_out()
+
+class QuotedListAST(BaseAST):
+    def pretty_out(self):
+        ast, = self.children
+        return '({})'.format(' '.join(map(repr, ast)))
 
 def build_lexchar_dict(**words):
     '''Given a map of strings->``TokenType`` *words* build a tree from a dict allowing easy checking of a word.'''
@@ -320,7 +319,7 @@ def _lookahead_token():
         try:
             _CURRENT_TOKEN = next(TOKENS)
         except StopIteration:
-            raise ValueError('ParseError: Unexepctedly reached end of stream')
+            raise ValueError('ParseError: Unexpectedly reached end of stream')
 
 
     return _CURRENT_TOKEN
@@ -568,6 +567,9 @@ class LispSymbol(LispValue):
     def pretty_out(self):
         return self._ast.pretty_out()
 
+    def __eq__(self, other):
+        return type(self) == type(other) and self.value == other.value
+
     def __repr__(self):
         return '<LispSymbol: {}>'.format(repr(self._ast))
 
@@ -709,7 +711,7 @@ def _eval_func_apply(env, expr):
         elif name == 'let*':
             bindings = args[0].children
             body = args[1]
-            return _eval_let(env, bindings, body)
+            return _eval_let_star(env, bindings, body)
 
     f_value = _eval_expr(env, f)
     # call-by-value
@@ -725,22 +727,22 @@ def _eval_if(env, exprs):
         return _eval_expr(env, if_false)
 
 def _eval_let(env, bindings, body):
-    newEnv = dict(env) 
+    new_env = dict(env)
     for binding in bindings:
         if not binding.ofType(FuncApplicationAST):
-            raise ValueError('EvalError: `let` must take arguments in format (let [(b0 x0) (b1 x1)] [body])')
+            raise ValueError('EvalError: malformed `let` expression.')
             
         name, value_ast = binding.children
         name, = name.children
-        newEnv[name] = _eval_expr(env, value_ast)
+        new_env[name] = _eval_expr(env, value_ast)
 
-    return _eval_expr(newEnv, body)
+    return _eval_expr(new_env, body)
 
-def _eval_let(env, bindings, body):
+def _eval_let_star(env, bindings, body):
     # create a copy
     for binding in bindings:
         if not binding.ofType(FuncApplicationAST):
-            raise ValueError('EvalError: `let` must take arguments in format (let [(b0 0) (b1 x1)] [body])')
+            raise ValueError('EvalError: malformed `let` expression.')
             
         name, value_ast = binding.children
         name, = name.children
@@ -800,7 +802,11 @@ def f_list(*args):
     
 # pointer equality by checking whether the two LispValue's 
 # are actually the same PyObject
-def f_p_eq(a, b): return LispBool(a is b)
+def f_p_eq(a, b):
+    if isinstance(a, LispSymbol):
+        return LispBool(a == b)
+    return LispBool(a is b)
+
 def f_eq(a, b): return LispBool(a == b)
 def f_eq_num(a, b):
     if (type(a), type(b)) != (LispNum, LispNum):
@@ -892,11 +898,13 @@ def evaluate(ast, defaultEnv=None):
             'cons': f_cons,
             'car': f_car,
             'cdr': f_cdr,
+            'cddr': compose(f_cdr, f_cdr),
+            'cdddr': compose(f_cdr, f_cdr, f_cdr),
             'cadr': compose(f_car, f_cdr),
             'caddr': compose(f_car, f_cdr, f_cdr),
             'cadddr': compose(f_car, f_cdr, f_cdr, f_cdr),
 
-            'eval': lambda *x: defaultEnv, # need to put defaultEnv in the co_freevars property
+            'eval': lambda *x: defaultEnv, # need to put defaultEnv in the co_freevars field
         }
 
         # inject the environment into the call to eval
@@ -915,12 +923,11 @@ def evaluate(ast, defaultEnv=None):
 class Lisp(Plugin):
     '''Performs evaluations on given strings interpreted as a scheme/lisp input
     '''
-    def _build_program_dict(self):
-        matches = build_lexchar_dict(**SYMBOL_LUT)
-        symbols = SYMBOLS
+    matches = build_lexchar_dict(**SYMBOL_LUT)
 
-        lexeme_dict = LexemeDict(matches)
-        program_dict = ProgramDict(symbols, lexeme_dict)
+    def _build_program_dict(self):
+        lexeme_dict = LexemeDict(Lisp.matches)
+        program_dict = ProgramDict(SYMBOLS, lexeme_dict)
         return program_dict
 
     def _lex(self, s):
@@ -942,7 +949,7 @@ class Lisp(Plugin):
         '''
         try:
             r = self._eval(e['data'])
-            e.reply(repr(r))
+            e.reply(r.pretty_out())
         except ValueError as e:
             e.reply(str(e))
 
@@ -954,30 +961,23 @@ if __name__ == '__main__':
     lexeme_dict = LexemeDict(matches)
     program_dict = ProgramDict(symbols, lexeme_dict)
 
-    def _count_brackets(s):
-        if not s:
-            return 0
-        c, *s = s
-        s = ''.join(s)
-        if c in ('(', '['):
-            return 1 + _count_brackets(s)
-        if c in (')', ']'):
-            return _count_brackets(s) - 1
-        return _count_brackets(s)
-
-    s = ''
-    unmatched = 0
+    c = 0
+    s = []
     while True:
-        s_ = input('> ')
-        s += s_
-        unmatched = unmatched + _count_brackets(s_)
-        if not unmatched:
-            tks = lex(program_dict, s)
-            ast = parse(tks)
-            print('ast:', repr(ast))
-            res = evaluate(ast)
-            print(res.pretty_out())
-            print('it ::',res.__class__.__name__) # debug
-            print('it =',repr(res)) # debug
-            print(res.value)
-            s = ''; k = 0
+        ss = input('> ')
+        s.append(ss)
+        c += len(list(filter(lambda x: x in ('(', '['), list(ss))))
+        c -= len(list(filter(lambda x: x in (')', ']'), list(ss))))
+
+        # only evalute matching brackets
+        if not c:
+            s = ' '.join(s)
+            try:
+                tks = lex(program_dict, s)
+                ast = parse(tks)
+                res = evaluate(ast)
+                print(res.pretty_out())
+            except ValueError as e:
+                print(str(e))
+            finally:
+                s = []
