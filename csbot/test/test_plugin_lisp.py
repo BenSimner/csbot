@@ -179,6 +179,14 @@ eval_test_cases_scopes = [
     ('(let [(x 3)] (let [(f (lambda (x) x))] (f 1)))', 1),
 ]
 
+eval_test_cases_let = [
+    ('(let [(f 1)] f)', 1),
+    ('(let* [(f 1) (g f)] g)', 1),
+    ('(let [(f 3)] (let* [(f 1) (g f)] g))', 1),
+    ('(letrec [(f (lambda [x] (if (= x 0) 1 (* x (f (- x 1))))))] (f 5))', 120),
+
+]
+
 class TestEval(BotTestCase):
     CONFIG = """\
     [@bot]
@@ -201,3 +209,6 @@ class TestEval(BotTestCase):
 
     def test_eval_scope(self):
         self._test(eval_test_cases_scopes)
+
+    def test_eval_lets(self):
+        self._test(eval_test_cases_let)
