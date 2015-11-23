@@ -247,15 +247,22 @@ class ProgramDict(defaultdict):
         super().__init__()
         self._symbols = symbol_list
         self._dict = lexeme_dict
+        self._missing_dict = {}
 
     def __missing__(self, s):
         lex_dict = self._dict
         symbols = self._symbols
 
+        # actually we have calculated this before,
+        # we just have the generator somewhere else
+        if s in self._missing_dict:
+            return self._missing_dict[s]()
+
         def _gen():
             word = ''
             string = False
             escape = False
+
             for letter in s:
                 # logic for handling strings
                 # this is the only place where whitespace doesn't break up tokens
@@ -288,8 +295,9 @@ class ProgramDict(defaultdict):
             if word:
                 yield lex_dict[word]
 
-        self[s] = _gen()
-        return self[s]
+        # return our token generator
+        self._missing_dict[s] = _gen
+        return _gen()
 
 def lex(program_dict, s):
     '''Perform lexical analysis on the given string *s* using a match dictionary *program_dict* 
@@ -461,9 +469,10 @@ def parse(ts):
     If *ts* is a valid iterable of tokens, this returns an :class:`AST`.
     If *ts* is invalid, this raises `~ValueError`
     '''
-    global TOKENS,STACK
+    global TOKENS, STACK, _CURRENT_TOKEN
     TOKENS = ts
     STACK = []
+    _CURRENT_TOKEN = None
     _parse_expr()
     return STACK.pop()
 
@@ -669,7 +678,6 @@ class LispProc(LispValue):
         for param, arg in zip(params, args):
             name, = param.children
             env[name] = arg
-
         return _eval_expr(env, body)
 
     @property
@@ -712,6 +720,10 @@ def _eval_func_apply(env, expr):
             bindings = args[0].children
             body = args[1]
             return _eval_let_star(env, bindings, body)
+        elif name == 'letrec':
+            bindings = args[0].children
+            body = args[1]
+            return _eval_letrec(env, bindings, body)
 
     f_value = _eval_expr(env, f)
     # call-by-value
@@ -738,17 +750,39 @@ def _eval_let(env, bindings, body):
 
     return _eval_expr(new_env, body)
 
-def _eval_let_star(env, bindings, body):
-    # create a copy
+def _eval_letrec(env, bindings, body):
+    new_env = dict(env)
+    names = []
     for binding in bindings:
         if not binding.ofType(FuncApplicationAST):
-            raise ValueError('EvalError: malformed `let` expression.')
+            raise ValueError('EvalError: malformed `letrec` expression.')
             
         name, value_ast = binding.children
         name, = name.children
-        env[name] = _eval_expr(env, value_ast)
+        new_env[name] = _eval_expr(env, value_ast)
+        names.append(name)
 
-    return _eval_expr(env, body)
+    for name in names:
+        v = new_env[name]
+        if isinstance(v, LispProc):
+            # update each procedures' env with each name
+            for n in names:
+                v._env[n] = new_env[n]
+
+    return _eval_expr(new_env, body)
+
+def _eval_let_star(env, bindings, body):
+    # create a copy
+    new_env = dict(env)
+    for binding in bindings:
+        if not binding.ofType(FuncApplicationAST):
+            raise ValueError('EvalError: malformed `let*` expression.')
+            
+        name, value_ast = binding.children
+        name, = name.children
+        new_env[name] = _eval_expr(new_env, value_ast)
+
+    return _eval_expr(new_env, body)
 
 def _eval_atom(env, atom):
     if atom.ofType(SymbolAST):
@@ -952,6 +986,9 @@ class Lisp(Plugin):
             e.reply(r.pretty_out())
         except ValueError as e:
             e.reply(str(e))
+        except RuntimeError as e:
+            e.reply('Error: Program halted at runtime.')
+
 
 if __name__ == '__main__':
     ## REPL
@@ -974,10 +1011,14 @@ if __name__ == '__main__':
             s = ' '.join(s)
             try:
                 tks = lex(program_dict, s)
+                tks2 = lex(program_dict, s)
                 ast = parse(tks)
                 res = evaluate(ast)
                 print(res.pretty_out())
             except ValueError as e:
                 print(str(e))
+            except RuntimeError as e:
+                print(str(e))
             finally:
                 s = []
+                c = 0
