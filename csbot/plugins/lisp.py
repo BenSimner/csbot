@@ -62,7 +62,7 @@ SYMBOLS = ('(', ')', '[', ']')
 class AST(ABC):
     '''The abstract-syntax-tree base for a scheme-like language
 
-    An AST can have a list of child :class:`AST`s
+    An AST can have a list of child :class:`AST`
     '''
 
     def ofType(self, cls):
@@ -85,7 +85,7 @@ class AST(ABC):
 
     @abstractproperty
     def children(self):
-        '''Returns an iterable of children :class:`AST`s associated with this class
+        '''Returns an iterable of children :class:`AST` associated with this class
         '''
 
     def __repr__(self):
@@ -108,7 +108,7 @@ class NumAST(AST):
     @property
     def children(self):
         '''For atomic values (numbers, symbols, strings...)
-        the values returned by ``children`` are python built-ins and not :class:`AST`s
+        the values returned by ``children`` are python built-ins and not :class:`AST`
         '''
 
         return [self._real, self._imaginary]
@@ -146,7 +146,7 @@ class QuotedListAST(BaseAST):
         return '({})'.format(' '.join(map(repr, ast)))
 
 def build_lexchar_dict(**words):
-    '''Given a map of strings->``TokenType`` *words* build a tree from a dict allowing easy checking of a word.'''
+    '''Given a map of strings -> ``TokenType`` *words* build a tree from a dict allowing easy checking of a word.'''
     matches = LexCharDict()
 
     for word,tok in words.items():
@@ -300,11 +300,11 @@ class ProgramDict(defaultdict):
         return _gen()
 
 def lex(program_dict, s):
-    '''Perform lexical analysis on the given string *s* using a match dictionary *program_dict* 
+    '''Perform lexical analysis on the given string *s* using a match dictionary *program_dict*
     (see :class:`ProgramDict`)
 
-    If *s* is accepted, then this will return a generator of *Token*s
-    If *s* is not accepted, then this will raise `~ValueError`
+    If *s* is accepted, then this will return a generator of :class:`Token`
+    If *s* is not accepted, then this will raise :exc:`ValueError`
     '''
 
     return program_dict[s]
@@ -467,7 +467,7 @@ def parse(ts):
     '''Performs syntactical analysis on the given iterable of tokens *ts*
 
     If *ts* is a valid iterable of tokens, this returns an :class:`AST`.
-    If *ts* is invalid, this raises `~ValueError`
+    If *ts* is invalid, this raises :exc:`ValueError`
     '''
     global TOKENS, STACK, _CURRENT_TOKEN
     TOKENS = ts
