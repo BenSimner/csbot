@@ -46,7 +46,7 @@ class TokenType(Enum):
     BOOL_TRUE = 11
     BOOL_FALSE = 12
 
-SYMBOL_LUT = {
+LEXEME_LUT = {
     '(': TokenType.L_PAREN,
     ')': TokenType.R_PAREN,
     '[': TokenType.L_BRACKET,
@@ -957,7 +957,7 @@ def evaluate(ast, defaultEnv=None):
 class Lisp(Plugin):
     '''Performs evaluations on given strings interpreted as a scheme/lisp input
     '''
-    matches = build_lexchar_dict(**SYMBOL_LUT)
+    matches = build_lexchar_dict(**LEXEME_LUT)
 
     def _build_program_dict(self):
         lexeme_dict = LexemeDict(Lisp.matches)
@@ -992,7 +992,7 @@ class Lisp(Plugin):
 
 if __name__ == '__main__':
     ## REPL
-    matches = build_lexchar_dict(**SYMBOL_LUT)
+    matches = build_lexchar_dict(**LEXEME_LUT)
     symbols = SYMBOLS
 
     lexeme_dict = LexemeDict(matches)
