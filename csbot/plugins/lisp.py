@@ -1,9 +1,15 @@
 import string
 import contextlib
+import collections
 
 from csbot.plugin import Plugin
 
-SYMBOLS = '()[]'
+OPEN_BRACKET_SYMBOLS = '(['
+CLOSED_BRACKET_SYMBOLS = ')]'
+BRACKET_SYMBOLS = OPEN_BRACKET_SYMBOLS + CLOSED_BRACKET_SYMBOLS
+SYMBOLS = '' + BRACKET_SYMBOLS
+
+IO = []
 
 class TokenizeError(Exception):
     def __init__(self, position, s):
@@ -24,26 +30,22 @@ class Value:
     '''A Lisp value
 
     A Wrapper with a type and a value
+
+    Handles pretty-printed output to terminal.
     '''
+    type = 'UNKNOWN_VALUE_TYPE'
+
     def __init__(self, value):
         self.value = value
 
-    @property
-    def type(self):
-        return 'UNKNOWN_VALUE_TYPE'
-
 class LispStr(Value):
-    @property
-    def type(self):
-        return 'string'
+    type = 'string'
 
     def __str__(self):
         return '"{}"'.format(str(self.value))
 
 class LispNum(Value):
-    @property
-    def type(self):
-        return 'num'
+    type = 'num'
 
     def __str__(self):
         return str(self.value)
@@ -52,48 +54,119 @@ class LispName(Value):
     '''TODO: Remove this type
     for it only serves as a catch for missing environments at the moment
     '''
-    @property
-    def type(self):
-        return 'TEMP_NAME'
+    type = 'TEMP_NAME'
 
     def __str__(self):
         return '<TEMP_NAME: {}>'.format(self.value)
 
 class LispFunction(Value):
-    def __init__(self, name, args):
-        self.value = (name, args)
+    type = 'function'
 
-    @property
-    def type(self):
-        return 'lambda'
+    def __init__(self, args, block):
+        self.value = (args, block)
 
+    def __str__(self):
+        return '<function>'
+
+class LispLambda(LispFunction):
     def __str__(self):
         return '<lambda>'
 
+class LispProcedure(LispFunction):
+    type = 'procedure'
+
+    def __init__(self, name, args, block):
+        self.name = name
+        super().__init__(args, block)
+
+    def __str__(self):
+        return '<procedure: {}>'.format(self.name)
+
 class LispBool(Value):
-    @property
-    def type(self):
-        return 'boolean'
+    type = 'boolean'
 
     def __str__(self):
         if self.value:
             return '#t'
         return '#f'
 
-def eval_function(call_pos, func):
-    if not isinstance(func, LispFunction):
-        raise InterpreterError(call_pos, 'Cannot call something of type <{}>'.format(func.type))
+class LispCons(Value):
+    type = 'pair'
 
-    name, args = func.value
+    def __init__(self, lhs, rhs):
+        self.value = (lhs, rhs)
 
-    '''Eval a LispFunction'''
-    # TODO: Use Environments and LispFunction types
-    assert isinstance(name, LispName)
-    if name.value == 'print':
-        return '\t'.join(map(str, args))
+    def __str__(self):
+        lhs, rhs = self.value
+        lst = []
 
-    # TODO: Do this with Environments
-    raise InterpreterError(call_pos, 'Unknown Function Name `{}`'.format(name))
+        # if lhs is None, then empty-list
+        if lhs:
+            lst.append(str(lhs))
+
+        while rhs:
+            if isinstance(rhs, LispCons):
+                lhs, rhs = rhs.value
+
+                if lhs:
+                    lst.append(str(lhs))
+            else:
+                # end of pair
+                lst.append('.')
+                lst.append(str(rhs))
+                break
+
+        return "'({})".format(' '.join(lst))
+
+def _assert_type(x, t):
+    if not isinstance(x, t):
+        raise InterpreterError('Expected an instance of `{}` (but got a `{}`)'.format(t.type, x.type))
+
+def _sum(args):
+    x = 0
+    for v in args:
+        x += v.value
+    return LispNum(x)
+
+def _neg(args):
+    it = iter(args)
+    x = next(it).value
+    for v in it:
+        x -= v.value
+    return LispNum(x)
+
+def _eq(args):
+    it = iter(args)
+    x = next(it).value
+    b = True
+    for v in it:
+        b = b and (x == v.value)
+    return LispBool(b)
+
+def _print(args):
+    arg, = args
+    IO.append(str(arg))
+
+def _cons(args):
+    x, ys = args
+    return LispCons(x, ys)
+
+def _car(args):
+    cons, = args
+    _assert_type(cons, LispCons)
+    return cons.lhs
+
+def _cdr(args):
+    cons, = args
+    _assert_type(cons, LispCons)
+    return cons.rhs
+
+def _list(args):
+    cc = LispCons(None, None)  # start with empty list
+    for x in reversed(args):
+        cc = LispCons(x, cc)
+
+    return cc
 
 class Parser:
     '''S-Expression Parser/Interpreter for a Lisp-like language
@@ -101,32 +174,39 @@ class Parser:
     def __init__(self):
         self.stream_position = 0
         self.tokens = []
+        self.global_environment = {
+            'print': LispProcedure('print', ['arg'], _print),
+            'cons': LispProcedure('cons', ['x', 'ys'], _cons),
+            'car': LispProcedure('car', ['xs'], _car),
+            'cdr': LispProcedure('cdr', ['xs'], _cdr),
+            'list': LispProcedure('list', ..., _list),
+            '+': LispProcedure('+', ..., _sum),
+            '-': LispProcedure('-', ..., _neg),
+            '=': LispProcedure('=', ..., _eq),
+        }
+
         self.stream = None
         self._next_lexeme = None
         self._lexeme_gen = None
-        self.auto_interpret = True
 
-        self._ast = []
+        # stack of environment scopes
+        self._scopes = [self.global_environment]
+
+        # helper for tokenizer for splitting up a string
         self._parsing_str = False
+
+        # the AST is a stack of functions
+        self._ast = []
 
     def push(self, x):
         '''Push a node 'x' onto the AST stack
         '''
-        if self.auto_interpret:
-            self._ast.append(x)
+        self._ast.append(x)
 
     def pop(self):
         '''Pops the last node off the AST stack and returns it
         '''
-        if self.auto_interpret:
-            return self._ast.pop()
-
-    @contextlib.contextmanager
-    def disable_interpreter(self):
-        x = self.auto_interpret
-        self.auto_interpret = False
-        yield
-        self.auto_interpret = x
+        return self._ast.pop()
 
     def current_char(self):
         '''Gets the current char from the stream'''
@@ -139,7 +219,6 @@ class Parser:
         '''Yields each token in sequence'''
 
         while True:
-
             try:
                 x = self.stream[self.stream_position]
             except IndexError:
@@ -153,6 +232,8 @@ class Parser:
                 yield from self._tokenize_hash()
             elif x in '0123456789':
                 yield from self._tokenize_num(x)
+            elif x in string.whitespace:
+                self.stream_position += 1
             else:
                 yield from self._tokenize_name()
 
@@ -251,10 +332,30 @@ class Parser:
         self.stream = s
         self._lexeme_gen = self.lexemes()
 
-        return self._parse()
+        while True:
+            try:
+                self.next
+            except TokenizeError:
+                break
+
+            self._parse()
+
+    @contextlib.contextmanager
+    def in_brackets(self):
+        '''
+        Accepts matching brackets
+        '''
+        if self.next == '(':
+            self.accept('(')
+            yield
+            self.accept(')')
+        else:
+            self.accept('[')
+            yield
+            self.accept(']')
 
     def _parse(self):
-        if self.next == '(':
+        if self.next in OPEN_BRACKET_SYMBOLS:
             self._parse_func_call()
         elif any(map(self.next.startswith, '0123456789')):
             self._parse_num()
@@ -263,39 +364,70 @@ class Parser:
         elif self.next.startswith('#'):
             self._parse_hash()
         else:
-            self._parse_name()
+            self._parse_var()
 
     def _parse_hash(self):
         if not self.next.startswith('#'):
             raise ParseError(self.stream_position, "Expected to see a #-defined-symbol before here")  # this is a bad message.
-
-        _, hash, s = self.next.partition('#')
+        _, _, s = self.next.partition('#')
         if s == 't':
             self.accept('#t')
-            self.push(LispBool(True))
+            self.push(lambda: LispBool(True))
         elif s == 'f':
             self.accept('#f')
-            self.push(LispBool(False))
+            self.push(lambda: LispBool(False))
         else:
             raise ParseError(self.stream_position, "Expected one of '#t', '#f'")
 
+    def _print_stream(self, fmt, *args):
+        s = ''
+
+        for i, x in enumerate(self.stream):
+            if i == self.stream_position:
+                s += '⟦{}'.format(x)
+            else:
+                s += str(x)
+
+        print('[{}] {}'.format(fmt.format(*args), s))
+
     def _parse_func_call(self):
         pos = self.stream_position
+        with self.in_brackets():
+            # special-case lazy-evaluated variants
+            if self.next == 'if':
+                self.accept('if')
+                self._parse_if()
+            elif self.next == 'lambda':
+                self.accept('lambda')
+                self._parse_lambda()
+            elif self.next == 'define':
+                self.accept('define')
+                self._parse_define()
+            else:
+                self._parse()
 
-        self.accept('(')
-        self._parse()
-        name = self.pop()
+                func_f = self.pop()
 
-        if isinstance(name, LispName):
-            if name.value == 'if':
-                return self._parse_if()
+                argfs = []
+                while self.next not in CLOSED_BRACKET_SYMBOLS:
+                    self._parse()
+                    argfs.append(self.pop())
 
-        args = []
-        while self.next != ')':
-            self._parse()
-            args.append(self.pop())
-        self.accept(')')
-        self.push(eval_function(pos, LispFunction(name, args)))
+                def _eval():
+                    func = func_f()
+                    if not isinstance(func, LispFunction):
+                        raise InterpreterError(pos, 'Can only call Functional types (procedure/lambda) not `{}` types'.format(func.type))
+
+                    (params, body) = func.value
+
+                    args = []
+                    for argf in argfs:
+                        args.append(argf())
+                    if params is not ... and len(params) != len(args):
+                        raise InterpreterError(pos, 'Parameter mismatch, expected {} arguments (got {})'.format(len(params), len(args)))
+                    return body(args)
+
+                self.push(_eval)
 
     def _parse_if(self):
         '''Parses an (if c t e)
@@ -304,30 +436,101 @@ class Parser:
         pos = self.stream_position
 
         self._parse()
-        condition = self.pop()
-        if not isinstance(condition, LispBool):
-            raise InterpreterError(pos, 'Condition must be boolean type, not `{}` type'.format(condition.type))
+        condition_f = self.pop()
 
-        if condition.value:
-            self._parse()
+        self._parse()
+        self._parse()
 
-            with self.disable_interpreter():
-                self._parse()
-        else:
-            with self.disable_interpreter():
-                self._parse()
+        else_block_f = self.pop()
+        then_block_f = self.pop()
 
-            self._parse()
+        def _eval():
+            condition = condition_f()
+            if not isinstance(condition, LispBool):
+                raise InterpreterError(pos, 'Condition must be boolean type, not `{}` type'.format(condition.type))
 
-        self.accept(')')
+            if condition.value:
+                return then_block_f()
+            else:
+                return else_block_f()
 
+        self.push(_eval)
+
+    def _parse_lambda(self):
+        '''Parses a (lambda (x y z) aexpr)
+        starting from       ^
+        '''
+        argfs = []
+        with self.in_brackets():
+            while self.next not in CLOSED_BRACKET_SYMBOLS:
+                self._parse_name()
+                argfs.append(self.pop())
+        self._parse()
+        expr_f = self.pop()
+
+        def _eval():
+            names = []
+            for x in argfs:
+                name = x().value
+                names.append(name)
+
+            def _f_expr(args):
+                with self.scope() as new_env:
+                    for name, arg in zip(names, args):
+                        new_env[name] = arg
+
+                    return expr_f()
+
+            return LispLambda(names, _f_expr)
+        self.push(_eval)
+
+    def _parse_define(self):
+        '''Parses a (define (f x) ...)
+        starting from       ^
+        '''
+        with self.in_brackets():
+            self._parse_name()
+            name_f = self.pop()
+
+            argfs = []
+            if self.next is '.':
+                argfs = ...
+            else:
+                while self.next not in CLOSED_BRACKET_SYMBOLS:
+                    self._parse_name()
+                    argfs.append(self.pop())
+
+        self._parse()
+        expr_f = self.pop()
+
+        def _eval():
+            proc_name = name_f().value
+            params = ... if argfs is ... else [f().value for f in argfs]
+            proc = LispProcedure(proc_name, None, None) ## temp
+
+            def _func_f(args):
+                # TODO: VARARGS BETTER?
+                if params is ...:
+                    return expr_f()
+
+                with self.scope() as new_env:
+                    for name, arg in zip(params, args):
+                        new_env[name] = arg
+                    new_env[proc_name] = proc
+                    return expr_f()
+
+            proc.value = (params, _func_f)
+            self._scopes[-1][proc_name] = proc
+            return proc  # ???
+
+        self.push(_eval)
 
     def _parse_num(self):
         num = self.next
         try:
             n = int(num)
             self.accept(num)
-            self.push(LispNum(n))
+            self.push(lambda: LispNum(n))
         except ValueError:
             raise ParseError(self.stream_position, 'Expected an integer: [0-9]*')
 
@@ -335,24 +538,62 @@ class Parser:
         s = self.next
         if s.startswith('"'):
             self.accept(s)
-            self.push(LispStr(s[1:-1]))
+            self.push(lambda: LispStr(s[1:-1]))
         else:
             raise ParseError(self.stream_position, 'Expected string')
 
     def _parse_name(self):
         name = self.next
         self.accept(name)
-        self.push(LispName(name))
+        self.push(lambda: LispName(name))
 
+    def _parse_var(self):
+        pos = self.stream_position
+        self._parse_name()
+        lname_f = self.pop()
 
+        def _eval():
+            lname = lname_f()
+            name  = lname.value
+
+            for sc in reversed(self._scopes):
+                if name in sc:
+                    return sc[name]
+
+            raise InterpreterError(pos, 'Unknown Name `{}`'.format(name))
+        self.push(_eval)
+
+    @contextlib.contextmanager
+    def scope(self):
+        ns = {}
+        self._scopes.append(ns)
+        yield ns
+        self._scopes.pop()
 
 class Lisp(Plugin):
     def lisp_eval(self, s, offset=0):
+        IO.clear()
         parser = Parser()
 
         try:
             parser.parse(s)
-            return str(parser.pop())
+            outfs = collections.deque()
+            while True:
+                try:
+                    f = parser.pop()
+                    outfs.appendleft(f)
+                except IndexError:
+                    break
+
+            outs = []
+            for f in outfs:
+                outs.append(f())
+
+            if outs[-1]:
+                IO.append(str(outs[-1]))
+
+            return '\t'.join(IO)
+        #except Exception: raise
         except TokenizeError as e:
             return ' ' * (offset + e.position) + '^ TokenizeError: ' + str(e)
         except ParseError as e:
